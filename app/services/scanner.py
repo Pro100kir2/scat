@@ -340,6 +340,8 @@ def build_stream_settings(node: VLESSNode) -> dict:
             settings["fingerprint"] = node.fingerprint_tls
         if node.alpn:
             settings["alpn"] = node.alpn
+        if node.allow_insecure:
+            settings["allowInsecure"] = node.allow_insecure
         stream["tlsSettings"] = settings
 
     elif node.security == "reality":
@@ -349,7 +351,7 @@ def build_stream_settings(node: VLESSNode) -> dict:
         if node.sni:
             settings["serverName"] = node.sni
         if node.public_key:
-            settings["password"] = node.public_key
+            settings["publicKey"] = node.public_key
         if node.short_id:
             settings["shortId"] = node.short_id
         if node.spider_x:

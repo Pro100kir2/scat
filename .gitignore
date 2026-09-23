@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environment
+.venv/
+venv/
+env/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Scanner output
+top5.txt
+results.json
+results_*.json
+*.log
+
+# Temporary Xray configs
+xray_*.json
+*.tmp
+*.temp
+
+# Local configuration
+config.txt
+
+# OS
+.DS_Store
+Thumbs.db

@@ -22,7 +22,7 @@ def public_node(node: dict, rank: int) -> dict:
     return {
         "id": node["fingerprint"],
         "rank": rank,
-        "link": node["original"],
+        "link": node["link"],
         "label": clean_label(node.get("name", "")),
         # Where traffic actually leaves the tunnel, measured during the scan.
         "country": node.get("exit_country") or None,

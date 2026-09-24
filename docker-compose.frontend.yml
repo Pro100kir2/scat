@@ -1,0 +1,41 @@
+# Скат frontend: the Vite build served by Nginx.
+#
+# VITE_* values are compiled into the JavaScript at BUILD time. Changing them in .env
+# has no effect until the image is rebuilt:  docker compose build frontend && docker compose up -d
+#
+# Published on 127.0.0.1 only; Caddy on the host serves https://scat-search.ru from it.
+# Standalone use:  docker compose -f docker-compose.frontend.yml up -d --build
+name: scat
+
+services:
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: ${VITE_API_URL:?set VITE_API_URL in .env, e.g. https://api.scat-search.ru}
+        VITE_SITE_URL: ${VITE_SITE_URL:-}
+        VITE_DONATE_URL: ${VITE_DONATE_URL:-}
+    image: scat-frontend:latest
+    ports:
+      - "127.0.0.1:8080:80"
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - scat
+
+networks:
+  scat:
+    name: scat

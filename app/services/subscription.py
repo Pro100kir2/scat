@@ -4,7 +4,6 @@ from urllib.parse import urlsplit, urlunsplit, parse_qs, urlencode, quote, unquo
 
 
 def format_node_title(node: dict, rank: int) -> str:
-    original_url = node.get("original", "")
     latency = node.get("latency_ms")
     latency_str = f"{latency:.0f}ms" if latency is not None else "OK"
     network = (node.get("network") or "tcp").upper()
@@ -38,7 +37,7 @@ def customize_vless_url(original_url: str, new_name: str) -> str:
 def generate_subscription_content(nodes: List[dict], format_type: str = "base64", rename: bool = True) -> str:
     urls = []
     for idx, node in enumerate(nodes, 1):
-        orig_url = node.get("original", "")
+        orig_url = node.get("link", "")
         if not orig_url:
             continue
         if rename:

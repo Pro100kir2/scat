@@ -189,3 +189,28 @@ def test_country_scan_queue_is_bounded(make_service):
         return outcomes
 
     assert run(scenario()) == ["started", "started", "busy"]
+
+
+def test_refresh_retry_after(make_service):
+    service = make_service()
+    assert service.refresh_retry_after(600) == 0
+
+    async def scenario():
+        assert service.refresh() == "started"
+        await service.wait()
+
+    asyncio.run(scenario())
+    assert 599 <= service.refresh_retry_after(600) <= 600
+    assert service.refresh_retry_after(600, now=time.time() + 601) == 0
+
+
+def test_refresh_joining_a_running_scan_does_not_start_the_cooldown(make_service):
+    service = make_service()
+
+    async def scenario():
+        assert service.request_scan() == "started"
+        assert service.refresh() == "joined"
+        await service.wait()
+
+    asyncio.run(scenario())
+    assert service.refresh_retry_after(600) == 0

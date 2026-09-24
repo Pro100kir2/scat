@@ -16,7 +16,7 @@ REALITY_LINK = (
 
 def make_node(i: int = 0, latency: float = 120.0) -> dict:
     return {
-        "original": REALITY_LINK.replace("example.com", f"n{i}.example.com"),
+        "link": REALITY_LINK.replace("example.com", f"n{i}.example.com"),
         "fingerprint": f"fp{i}",
         "uuid": "11111111-2222-3333-4444-555555555555",
         "address": f"n{i}.example.com",

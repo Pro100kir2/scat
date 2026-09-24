@@ -29,9 +29,9 @@ watch(
 </script>
 
 <template>
-  <dialog ref="dialog" class="qr" aria-labelledby="qr-title" @close="emit('close')" @click.self="dialog?.close()">
+  <dialog ref="dialog" class="sheet qr" aria-labelledby="qr-title" @close="emit('close')" @click.self="dialog?.close()">
     <div v-if="node" class="qr__body">
-      <button class="btn btn--sm btn--quiet qr__close" type="button" aria-label="Закрыть" @click="dialog?.close()">
+      <button class="btn btn--sm btn--quiet sheet__close" type="button" aria-label="Закрыть" @click="dialog?.close()">
         <AppIcon name="close" />
       </button>
       <p class="eyebrow">Жемчужина № {{ node.rank }}</p>
@@ -48,21 +48,6 @@ watch(
 <style scoped>
 .qr {
   width: min(360px, calc(100vw - 32px));
-  padding: 0;
-  border: 1px solid var(--line-strong);
-  border-radius: 22px;
-  background: var(--sea);
-  color: var(--text);
-  box-shadow: 0 40px 120px -20px rgba(0, 0, 0, 0.7);
-}
-
-.qr[open] {
-  animation: rise 0.45s var(--ease-out);
-}
-
-.qr::backdrop {
-  background: rgba(3, 10, 16, 0.72);
-  backdrop-filter: blur(6px);
 }
 
 .qr__body {
@@ -72,14 +57,6 @@ watch(
   gap: 12px;
   padding: 28px 24px 24px;
   text-align: center;
-}
-
-.qr__close {
-  position: absolute;
-  top: 10px;
-  right: 10px;
-  width: 40px;
-  padding: 0;
 }
 
 .qr__title {
@@ -107,12 +84,5 @@ watch(
   margin-bottom: 6px;
   color: var(--text-3);
   font-size: 13px;
-}
-
-@keyframes rise {
-  from {
-    opacity: 0;
-    transform: translateY(16px) scale(0.98);
-  }
 }
 </style>

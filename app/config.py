@@ -47,7 +47,7 @@ REACH_STATUS = 204
 SPEED_URL = "https://speed.cloudflare.com/__down"
 
 # Bump when ranking/testing logic changes so caches written by older logic are ignored.
-SCANNER_VERSION = "3.0"
+SCANNER_VERSION = "3.1"
 
 # --- Cache -------------------------------------------------------------------
 DATA_DIR = Path(os.getenv("DATA_DIR", str(BASE_DIR / "data")))
@@ -69,6 +69,8 @@ ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "")
 
 # Requests that may start a scan, per client IP per minute.
 SCAN_RATE_LIMIT_PER_MINUTE = int(os.getenv("SCAN_RATE_LIMIT_PER_MINUTE", "6"))
+# After a visitor forces a fresh scan, nobody can force another for this long.
+REFRESH_COOLDOWN_SECONDS = int(os.getenv("REFRESH_COOLDOWN_SECONDS", str(10 * 60)))
 # Scans run one at a time; at most this many country searches may wait in line.
 MAX_QUEUED_SCANS = int(os.getenv("MAX_QUEUED_SCANS", "3"))
 # Trust X-Forwarded-For (only enable behind your own reverse proxy).

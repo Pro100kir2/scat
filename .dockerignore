@@ -10,3 +10,6 @@ results.json
 top5.txt
 *.backup
 **/__pycache__
+# Secrets never go into the build context.
+.env
+.env.*

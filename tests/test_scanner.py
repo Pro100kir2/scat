@@ -1,4 +1,5 @@
 import asyncio
+import re
 import shutil
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -9,15 +10,28 @@ from app import config
 from app.services import probes
 from app.services import scanner as scanner_module
 from app.services.presenter import clean_label
+from urllib.parse import parse_qs, urlsplit
+
 from app.services.scanner import (
     ScanQuery,
     VLESSScannerManager,
+    build_outbound,
     build_xray_config,
     country_from_name,
+    link_matches_tested_config,
+    node_result,
     order_candidates,
     parse_vless,
 )
 from tests.conftest import REALITY_LINK
+
+UUID = "11111111-2222-3333-4444-555555555555"
+PBK = "Yx0lZ5bqG3N5M5xk0pWkZxQy3qvC0d5c2mV9rBzH1Qw"
+
+
+def link_params(link: str) -> dict:
+    return {k: v[0] for k, v in parse_qs(urlsplit(link).query, keep_blank_values=True).items()}
+
 
 # --- parsing ----------------------------------------------------------------------
 
@@ -31,11 +45,11 @@ def test_parse_reality_link():
     assert node.label_country == "DE"
 
 
-def test_unknown_tls_fingerprint_is_dropped():
+def test_unknown_reality_fingerprint_falls_back_to_the_tested_one():
     node = parse_vless(REALITY_LINK.replace("fp=chrome", "fp=hellochrome_120"))
-    assert node.fingerprint_tls == ""
     reality = build_xray_config([node])["outbounds"][0]["streamSettings"]["realitySettings"]
     assert reality["fingerprint"] == "chrome"
+    assert link_params(node.link)["fp"] == "chrome"  # the link says what was tested
 
 
 @pytest.mark.parametrize(
@@ -53,8 +67,101 @@ def test_links_xray_would_reject_are_skipped(replacement):
 
 
 def test_junk_alpn_is_filtered():
-    link = REALITY_LINK.replace("type=tcp", "type=tcp&alpn=h2,v2rayNplus--junk,http/1.1")
-    assert parse_vless(link).alpn == ["h2", "http/1.1"]
+    node = parse_vless(f"vless://{UUID}@h.example.com:443?type=ws&security=tls&alpn=h2,v2rayNplus--junk,http/1.1")
+    assert node.alpn == ["h2", "http/1.1"]
+    assert link_params(node.link)["alpn"] == "h2,http/1.1"
+
+
+# --- share links: what users get must be exactly what was tested ------------------
+
+LINKS = {
+    "reality-vision": f"vless://{UUID}@r.example.com:443?type=tcp&security=reality&sni=www.microsoft.com"
+                      f"&fp=firefox&pbk={PBK}&sid=6ba85179e30d4fc2&spx=%2F&flow=xtls-rprx-vision#%F0%9F%87%A9%F0%9F%87%AA%20DE",
+    "reality-no-sid": f"vless://{UUID}@r.example.com:443?type=tcp&security=reality&sni=www.microsoft.com&pbk={PBK}",
+    "reality-aliases": f"vless://{UUID}@r.example.com:443?network=raw&security=reality&serverName=www.microsoft.com"
+                       f"&publicKey={PBK}&shortId=ab&fingerprint=safari&spiderX=%2Fx",
+    "ws-tls": f"vless://{UUID}@w.example.com:2053?type=ws&security=tls&sni=cdn.example.com&host=cdn.example.com"
+              "&path=%2Fws%3Fed%3D2048&fp=chrome&alpn=h2,http/1.1&allowInsecure=1",
+    "ws-plain-unencoded-path": f"vless://{UUID}@57.129.41.216:80?security=none&type=ws&path=/vless/&host=OV-Germany1.09vpn.com",
+    "grpc-multi": f"vless://{UUID}@g.example.com:443?type=grpc&security=tls&serviceName=my%20svc&mode=multi&sni=g.example.com",
+    "xhttp": f"vless://{UUID}@x.example.com:443?type=splithttp&security=tls&path=%2Fxh&host=x.example.com&mode=packet-up",
+    "httpupgrade": f"vless://{UUID}@u.example.com:80?type=http-upgrade&path=%2Fup&host=u.example.com",
+    "ipv6": f"vless://{UUID}@[2001:db8::1]:8443?type=tcp&security=tls&sni=v6.example.com",
+    "html-escaped": f"vless://{UUID}@r.example.com:443?type=tcp&amp;security=reality&amp;sni=www.microsoft.com&amp;pbk={PBK}",
+    "raw-fragment": f"vless://{UUID}@31.76.76.28:443?path=%2F&security=&encryption=none&type=ws#🇳🇱[openproxylist.com",
+}
+
+
+@pytest.mark.parametrize("name", LINKS)
+def test_share_link_reproduces_the_tested_config(name):
+    node = parse_vless(LINKS[name])
+    assert link_matches_tested_config(node)
+    # Idempotent: a link rebuilt from the share link is the share link.
+    assert parse_vless(node.link).link == node.link
+    # Strict RFC 3986: no raw spaces, emoji or brackets outside an IPv6 host.
+    parts = urlsplit(node.link)
+    assert re.fullmatch(r"[A-Za-z0-9\-._~%:/?#@=&+,;!$'()*]*", node.link.replace(f"[{node.address}]", ""))
+    assert parts.port == node.port and parts.hostname == node.address.lower()
+
+
+def test_share_link_uses_the_real_server_port_not_the_scanner_port():
+    nodes = [parse_vless(link) for link in LINKS.values()]
+    build_xray_config(nodes)  # assigns local SOCKS ports 20000+
+    for node in nodes:
+        assert node.local_port >= config.PORT_START
+        assert urlsplit(node.link).port == node.port != node.local_port
+        outbound = build_xray_config([node])["outbounds"][0]
+        assert outbound["settings"]["vnext"][0]["port"] == node.port
+    assert "local_port" not in node_result(nodes[0])
+
+
+def test_aliases_become_standard_parameters():
+    params = link_params(parse_vless(LINKS["reality-aliases"]).link)
+    assert params["type"] == "tcp"
+    assert params["sni"] == "www.microsoft.com"
+    assert params["pbk"] == PBK and params["sid"] == "ab"
+    assert params["fp"] == "safari" and params["spx"] == "/x"
+    assert not {"serverName", "publicKey", "shortId", "fingerprint", "network", "spiderX"} & set(params)
+
+
+def test_reality_without_short_id_is_tested_and_shared_without_one():
+    node = parse_vless(LINKS["reality-no-sid"])
+    reality = build_outbound(node, "t")["streamSettings"]["realitySettings"]
+    assert "shortId" not in reality and "sid" not in link_params(node.link)
+    assert reality["fingerprint"] == link_params(node.link)["fp"] == "chrome"
+
+
+def test_parameters_the_scanner_does_not_test_are_not_shared():
+    link = (f"vless://{UUID}@h.example.com:443?type=tcp&headerType=http&host=%2F%3FTelegram&path=%2Fx"
+            f"&security=reality&sni=h.example.com&pbk={PBK}&alpn=h2&allowInsecure=1&serviceName=x&extra=%7B%7D")
+    params = link_params(parse_vless(link).link)
+    assert not {"headerType", "host", "path", "alpn", "allowInsecure", "serviceName", "extra"} & set(params)
+    plain = link_params(parse_vless(f"vless://{UUID}@h.example.com:80?type=grpc&sni=%2Fjunk&fp=chrome&pbk={PBK}").link)
+    assert plain["security"] == "none" and not {"sni", "fp", "pbk"} & set(plain)
+
+
+def test_encoding_round_trips_special_characters():
+    node = parse_vless(f"vless://{UUID}@h.example.com:80?type=ws&path=%2Fa%2Bb%26c%3D1%23x&host=h.example.com#name%20with%20%26")
+    assert node.path == "/a+b&c=1#x"
+    assert "%2Fa%2Bb%26c%3D1%23x" in node.link
+    again = parse_vless(node.link)
+    assert again.path == node.path and again.name == "name with &"
+
+
+def test_vless_encryption_the_scanner_cannot_speak_is_rejected():
+    with pytest.raises(ValueError):
+        parse_vless(f"vless://{UUID}@h.example.com:443?type=tcp&security=tls&encryption=mlkem768x25519plus.native.0rtt.abc")
+
+
+@pytest.mark.skipif(
+    not (Path(config.XRAY_BINARY).exists() or shutil.which("xray")),
+    reason="xray binary not installed",
+)
+def test_xray_accepts_every_share_link_shape():
+    manager = VLESSScannerManager()
+    nodes = [parse_vless(link) for link in LINKS.values()]
+    ok, reason = asyncio.run(manager._xray_accepts(manager.ensure_xray_binary(), nodes))
+    assert ok, reason
 
 
 def test_country_and_label():

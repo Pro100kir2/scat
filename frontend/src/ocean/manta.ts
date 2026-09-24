@@ -68,6 +68,14 @@ export interface MantaTarget {
   speed: number // desired speed, px/s at unit scale
 }
 
+/** On-screen extent of the drawn body, relative to (x, y). */
+export interface MantaBounds {
+  left: number
+  right: number
+  top: number
+  bottom: number
+}
+
 export class Manta {
   x: number
   y: number
@@ -87,6 +95,8 @@ export class Manta {
   /** Wingspan in px at depth 0. */
   span = 200
   target: MantaTarget
+  /** Extent of the last projected pose; refreshed by pose(). */
+  readonly bounds: MantaBounds = { left: 0, right: 0, top: 0, bottom: 0 }
   /** A brief bank-and-climb flourish after a discovery, 0..1. */
   private delight = 0
 
@@ -229,10 +239,9 @@ export class Manta {
       .join(',')})`
   }
 
-  draw(ctx: CanvasRenderingContext2D) {
+  /** Project the outline and tail for the current pose and measure how far they reach on screen. */
+  pose(): MantaBounds {
     const s = this.scale
-    const haze = this.depth * 0.55
-
     OUTLINE.forEach(([f, r], i) => this.project(f, r, this.wingLift(f, r), this.pts, i * 2, s))
 
     // Tail: follows the body with a lagging sway, bends against the turn.
@@ -242,6 +251,33 @@ export class Manta {
       const sway = Math.sin(this.flapPhase * 0.5 - k * 3) * 0.05 * k - this.yawRate * 0.22 * k * k
       this.project(f, sway, this.wingLift(-0.5, 0) - k * k * 0.04, this.tail, i * 2, s)
     }
+
+    let minX = Infinity
+    let maxX = -Infinity
+    let minY = Infinity
+    let maxY = -Infinity
+    for (const pts of [this.pts, this.tail]) {
+      for (let i = 0; i < pts.length; i += 2) {
+        minX = Math.min(minX, pts[i]!)
+        maxX = Math.max(maxX, pts[i]!)
+        minY = Math.min(minY, pts[i + 1]!)
+        maxY = Math.max(maxY, pts[i + 1]!)
+      }
+    }
+    // The rim-light stroke is drawn centred on the outline.
+    const stroke = Math.max(1, s * 0.013)
+    const b = this.bounds
+    b.left = minX - this.x - stroke
+    b.right = maxX - this.x + stroke
+    b.top = minY - this.y - stroke
+    b.bottom = maxY - this.y + stroke
+    return b
+  }
+
+  draw(ctx: CanvasRenderingContext2D) {
+    const s = this.scale
+    const haze = this.depth * 0.55
+    this.pose()
 
     ctx.save()
     ctx.lineCap = 'round'

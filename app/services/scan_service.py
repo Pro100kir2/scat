@@ -10,6 +10,7 @@ import asyncio
 import fcntl
 import json
 import logging
+import math
 import os
 import time
 from datetime import datetime, timezone
@@ -127,6 +128,7 @@ class ScanService:
         self.lock_path = lock_path
         self.max_queued = max_queued
         self._slots: dict[str, _Slot] = {}
+        self._refreshed_ts: Optional[float] = None
         self.stats = {"cache_hits": 0, "scans_started": 0, "requests_joined": 0, "rejected_busy": 0}
 
     def _slot(self, query: ScanQuery) -> _Slot:
@@ -187,6 +189,20 @@ class ScanService:
         self.stats["scans_started"] += 1
         slot.task = asyncio.create_task(self._run(query, force), name=f"skat-scan-{query.key}")
         return "started"
+
+    def refresh_retry_after(self, cooldown_seconds: float, now: Optional[float] = None) -> int:
+        """Seconds until visitors may force another refresh; 0 when allowed."""
+        if self._refreshed_ts is None:
+            return 0
+        now = time.time() if now is None else now
+        return max(0, math.ceil(self._refreshed_ts + cooldown_seconds - now))
+
+    def refresh(self) -> RequestOutcome:
+        """Visitor-triggered rescan that ignores the cache. The old results stay visible until it finishes."""
+        outcome = self.request_scan(ALL, force=True)
+        if outcome == "started":
+            self._refreshed_ts = time.time()
+        return outcome
 
     async def wait(self, query: ScanQuery = ALL) -> None:
         """Wait for the query's scan without cancelling it when the caller is cancelled."""

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { ApiError, fetchResults, requestScan } from '@/services/api'
+import { ApiError, fetchResults, requestRefresh, requestScan } from '@/services/api'
 
 const status = { cache_state: 'fresh', is_scanning: false, progress: null, last_scan_failed: false, cache: null }
 const results = { ...status, nodes: [{ id: 'a', link: 'vless://x', rank: 1 }] }
@@ -66,5 +66,12 @@ describe('api client', () => {
   it('maps offline errors to network', async () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')))
     await expect(requestScan()).rejects.toMatchObject({ kind: 'network' })
+  })
+
+  it('validates refresh responses', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(reply({ ...status, outcome: 'started', retry_after: 600 })))
+    await expect(requestRefresh()).resolves.toMatchObject({ outcome: 'started', retry_after: 600 })
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(reply({ ...status, outcome: 'started' })))
+    await expect(requestRefresh()).rejects.toMatchObject({ kind: 'malformed' })
   })
 })

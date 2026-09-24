@@ -1,5 +1,5 @@
 import { env } from '@/config/env'
-import type { ResultsResponse, ScanRequestResponse, ScanStatus } from '@/types/api'
+import type { RefreshResponse, ResultsResponse, ScanRequestResponse, ScanStatus } from '@/types/api'
 
 export type ApiErrorKind = 'network' | 'timeout' | 'rate_limit' | 'server' | 'malformed' | 'aborted'
 
@@ -133,4 +133,13 @@ export async function requestScan(signal?: AbortSignal): Promise<ScanRequestResp
   const data = await request('/api/scan', { method: 'POST', signal })
   assertStatus(data)
   return data as ScanRequestResponse
+}
+
+/** Ignore today's cache and rescan. The server allows this once per cooldown for everyone. */
+export async function requestRefresh(signal?: AbortSignal): Promise<RefreshResponse> {
+  const data = await request('/api/cache/refresh', { method: 'POST', signal })
+  assertStatus(data)
+  const retryAfter = (data as unknown as Record<string, unknown>).retry_after
+  if (typeof retryAfter !== 'number') throw new ApiError('malformed', 'Unexpected refresh payload')
+  return data as RefreshResponse
 }

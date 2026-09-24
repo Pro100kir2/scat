@@ -78,6 +78,17 @@ def test_scan_rate_limit(client, api_service):
     assert int(response.headers["retry-after"]) > 0
 
 
+def test_cache_refresh_forces_a_scan_then_cools_down(client, api_service):
+    fill_cache(api_service)
+    data = client.post("/api/cache/refresh").json()
+    assert data["outcome"] == "started"
+    assert data["retry_after"] == config.REFRESH_COOLDOWN_SECONDS
+    assert data["cache_state"] == "fresh"  # old results stay visible while the rescan runs
+    response = client.post("/api/cache/refresh")
+    assert response.status_code == 429
+    assert 0 < int(response.headers["retry-after"]) <= config.REFRESH_COOLDOWN_SECONDS
+
+
 def test_subscription(client, api_service):
     fill_cache(api_service)
     response = client.get("/api/vless/sub")

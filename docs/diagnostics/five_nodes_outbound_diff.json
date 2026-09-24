@@ -1,0 +1,244 @@
+{
+ "scanner_version": "3.0",
+ "nodes": [
+  {
+   "idx": 1,
+   "source_link(original)": "vless://cd3bb7d9-7df3-4644-ac05-c260990ac277@66.90.104.42:2083?type=grpc&serviceName=vless#🇬🇧[openproxylist.com",
+   "v31_link": "vless://cd3bb7d9-7df3-4644-ac05-c260990ac277@66.90.104.42:2083?encryption=none&type=grpc&security=none&serviceName=vless#%F0%9F%87%AC%F0%9F%87%A7%5Bopenproxylist.com",
+   "params": {
+    "type": "grpc",
+    "serviceName": "vless"
+   },
+   "cache_vs_reparse_mismatch": {},
+   "A_tested": {
+    "protocol": "vless",
+    "settings": {
+     "vnext": [
+      {
+       "address": "66.90.104.42",
+       "port": 2083,
+       "users": [
+        {
+         "id": "cd3bb7d9-7df3-4644-ac05-c260990ac277",
+         "encryption": "none",
+         "level": 0
+        }
+       ]
+      }
+     ]
+    },
+    "streamSettings": {
+     "network": "grpc",
+     "security": "none",
+     "grpcSettings": {
+      "serviceName": "vless"
+     }
+    }
+   },
+   "diff A vs B (v3.1 link->our parser)": [],
+   "diff A vs C (user link->reference client)": [],
+   "diff A vs C+ (form-decoding client)": [],
+   "diff A vs C2 (v3.1 link->reference client)": [],
+   "v31_link_matches_tested_config": true
+  },
+  {
+   "idx": 2,
+   "source_link(original)": "vless://a148f4c1-f95f-4c03-9768-e5d80b6b4996@188.114.97.6:80?path=%2FCooonfigCooonfigCooonfigCooonfigCooonfig&security=none&type=ws&encryption=none&host=msjsi.azazilvpn.sbs.#🌐سرور",
+   "v31_link": "vless://a148f4c1-f95f-4c03-9768-e5d80b6b4996@188.114.97.6:80?encryption=none&type=ws&security=none&path=%2FCooonfigCooonfigCooonfigCooonfigCooonfig&host=msjsi.azazilvpn.sbs.#%F0%9F%8C%90%D8%B3%D8%B1%D9%88%D8%B1",
+   "params": {
+    "path": "/CooonfigCooonfigCooonfigCooonfigCooonfig",
+    "security": "none",
+    "type": "ws",
+    "encryption": "none",
+    "host": "msjsi.azazilvpn.sbs."
+   },
+   "cache_vs_reparse_mismatch": {},
+   "A_tested": {
+    "protocol": "vless",
+    "settings": {
+     "vnext": [
+      {
+       "address": "188.114.97.6",
+       "port": 80,
+       "users": [
+        {
+         "id": "a148f4c1-f95f-4c03-9768-e5d80b6b4996",
+         "encryption": "none",
+         "level": 0
+        }
+       ]
+      }
+     ]
+    },
+    "streamSettings": {
+     "network": "ws",
+     "security": "none",
+     "wsSettings": {
+      "path": "/CooonfigCooonfigCooonfigCooonfigCooonfig",
+      "host": "msjsi.azazilvpn.sbs."
+     }
+    }
+   },
+   "diff A vs B (v3.1 link->our parser)": [],
+   "diff A vs C (user link->reference client)": [],
+   "diff A vs C+ (form-decoding client)": [],
+   "diff A vs C2 (v3.1 link->reference client)": [],
+   "v31_link_matches_tested_config": true
+  },
+  {
+   "idx": 3,
+   "source_link(original)": "vless://4bdeee92-97e8-414d-bef6-ec1d5e2ab73b@gerwai1488.vvzzkontaktezzvv.garden:443?encryption=none&flow=xtls-rprx-vision&type=tcp&security=reality&sni=gerwai1488.vvzzkontaktezzvv.garden&pbk=EYfpgja4VjpLUnWHtDJQ1XZk6xL5j4rXwf80Sw6keV0&sid=0c13e8822e7f58aa&fp=firefox&spx=/#%5BOpenRay%5D%20%F0%9F%87%A9%F0%9F%87%AA%20DE-24542",
+   "v31_link": "vless://4bdeee92-97e8-414d-bef6-ec1d5e2ab73b@gerwai1488.vvzzkontaktezzvv.garden:443?encryption=none&type=tcp&security=reality&flow=xtls-rprx-vision&sni=gerwai1488.vvzzkontaktezzvv.garden&fp=firefox&pbk=EYfpgja4VjpLUnWHtDJQ1XZk6xL5j4rXwf80Sw6keV0&sid=0c13e8822e7f58aa&spx=%2F#%5BOpenRay%5D%20%F0%9F%87%A9%F0%9F%87%AA%20DE-24542",
+   "params": {
+    "encryption": "none",
+    "flow": "xtls-rprx-vision",
+    "type": "tcp",
+    "security": "reality",
+    "sni": "gerwai1488.vvzzkontaktezzvv.garden",
+    "pbk": "EYfpgja4VjpLUnWHtDJQ1XZk6xL5j4rXwf80Sw6keV0",
+    "sid": "0c13e8822e7f58aa",
+    "fp": "firefox",
+    "spx": "/"
+   },
+   "cache_vs_reparse_mismatch": {},
+   "A_tested": {
+    "protocol": "vless",
+    "settings": {
+     "vnext": [
+      {
+       "address": "gerwai1488.vvzzkontaktezzvv.garden",
+       "port": 443,
+       "users": [
+        {
+         "id": "4bdeee92-97e8-414d-bef6-ec1d5e2ab73b",
+         "encryption": "none",
+         "level": 0,
+         "flow": "xtls-rprx-vision"
+        }
+       ]
+      }
+     ]
+    },
+    "streamSettings": {
+     "network": "raw",
+     "security": "reality",
+     "realitySettings": {
+      "fingerprint": "firefox",
+      "serverName": "gerwai1488.vvzzkontaktezzvv.garden",
+      "publicKey": "EYfpgja4VjpLUnWHtDJQ1XZk6xL5j4rXwf80Sw6keV0",
+      "shortId": "0c13e8822e7f58aa",
+      "spiderX": "/"
+     }
+    }
+   },
+   "diff A vs B (v3.1 link->our parser)": [],
+   "diff A vs C (user link->reference client)": [],
+   "diff A vs C+ (form-decoding client)": [],
+   "diff A vs C2 (v3.1 link->reference client)": [],
+   "v31_link_matches_tested_config": true
+  },
+  {
+   "idx": 4,
+   "source_link(original)": "vless://c5694dc5-39fd-4a92-8430-3837baa522a3@lt.aether-runet.top:443?security=reality&type=tcp&packetEncoding=xudp&sni=lt.aether-runet.top&fp=firefox&flow=xtls-rprx-vision&sid=4fa44664f6a566d3&pbk=vrcsm8L_tY7sNbnCEdLCEjOthh_w9bdWS3wFPgsIomk#🇱🇹[openproxylist.com",
+   "v31_link": "vless://c5694dc5-39fd-4a92-8430-3837baa522a3@lt.aether-runet.top:443?encryption=none&type=tcp&security=reality&flow=xtls-rprx-vision&sni=lt.aether-runet.top&fp=firefox&pbk=vrcsm8L_tY7sNbnCEdLCEjOthh_w9bdWS3wFPgsIomk&sid=4fa44664f6a566d3#%F0%9F%87%B1%F0%9F%87%B9%5Bopenproxylist.com",
+   "params": {
+    "security": "reality",
+    "type": "tcp",
+    "packetEncoding": "xudp",
+    "sni": "lt.aether-runet.top",
+    "fp": "firefox",
+    "flow": "xtls-rprx-vision",
+    "sid": "4fa44664f6a566d3",
+    "pbk": "vrcsm8L_tY7sNbnCEdLCEjOthh_w9bdWS3wFPgsIomk"
+   },
+   "cache_vs_reparse_mismatch": {},
+   "A_tested": {
+    "protocol": "vless",
+    "settings": {
+     "vnext": [
+      {
+       "address": "lt.aether-runet.top",
+       "port": 443,
+       "users": [
+        {
+         "id": "c5694dc5-39fd-4a92-8430-3837baa522a3",
+         "encryption": "none",
+         "level": 0,
+         "flow": "xtls-rprx-vision"
+        }
+       ]
+      }
+     ]
+    },
+    "streamSettings": {
+     "network": "raw",
+     "security": "reality",
+     "realitySettings": {
+      "fingerprint": "firefox",
+      "serverName": "lt.aether-runet.top",
+      "publicKey": "vrcsm8L_tY7sNbnCEdLCEjOthh_w9bdWS3wFPgsIomk",
+      "shortId": "4fa44664f6a566d3",
+      "spiderX": "/"
+     }
+    }
+   },
+   "diff A vs B (v3.1 link->our parser)": [],
+   "diff A vs C (user link->reference client)": [],
+   "diff A vs C+ (form-decoding client)": [],
+   "diff A vs C2 (v3.1 link->reference client)": [],
+   "v31_link_matches_tested_config": true
+  },
+  {
+   "idx": 5,
+   "source_link(original)": "vless://c5694dc5-39fd-4a92-8430-3837baa522a3@31.76.39.141:443?security=reality&encryption=none&pbk=G2U8_BvRAgcOw0sX8u_0yYdVAlD8CWLSi-uYjvH07hw&headerType=none&fp=firefox&type=tcp&flow=xtls-rprx-vision&sni=gb.superbuba.top&sid=4fa44664f6a566d3#🇬🇧[openproxylist.com",
+   "v31_link": "vless://c5694dc5-39fd-4a92-8430-3837baa522a3@31.76.39.141:443?encryption=none&type=tcp&security=reality&flow=xtls-rprx-vision&sni=gb.superbuba.top&fp=firefox&pbk=G2U8_BvRAgcOw0sX8u_0yYdVAlD8CWLSi-uYjvH07hw&sid=4fa44664f6a566d3#%F0%9F%87%AC%F0%9F%87%A7%5Bopenproxylist.com",
+   "params": {
+    "security": "reality",
+    "encryption": "none",
+    "pbk": "G2U8_BvRAgcOw0sX8u_0yYdVAlD8CWLSi-uYjvH07hw",
+    "headerType": "none",
+    "fp": "firefox",
+    "type": "tcp",
+    "flow": "xtls-rprx-vision",
+    "sni": "gb.superbuba.top",
+    "sid": "4fa44664f6a566d3"
+   },
+   "cache_vs_reparse_mismatch": {},
+   "A_tested": {
+    "protocol": "vless",
+    "settings": {
+     "vnext": [
+      {
+       "address": "31.76.39.141",
+       "port": 443,
+       "users": [
+        {
+         "id": "c5694dc5-39fd-4a92-8430-3837baa522a3",
+         "encryption": "none",
+         "level": 0,
+         "flow": "xtls-rprx-vision"
+        }
+       ]
+      }
+     ]
+    },
+    "streamSettings": {
+     "network": "raw",
+     "security": "reality",
+     "realitySettings": {
+      "fingerprint": "firefox",
+      "serverName": "gb.superbuba.top",
+      "publicKey": "G2U8_BvRAgcOw0sX8u_0yYdVAlD8CWLSi-uYjvH07hw",
+      "shortId": "4fa44664f6a566d3",
+      "spiderX": "/"
+     }
+    }
+   },
+   "diff A vs B (v3.1 link->our parser)": [],
+   "diff A vs C (user link->reference client)": [],
+   "diff A vs C+ (form-decoding client)": [],
+   "diff A vs C2 (v3.1 link->reference client)": [],
+   "v31_link_matches_tested_config": true
+  }
+ ]
+}

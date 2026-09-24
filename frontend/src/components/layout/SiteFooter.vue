@@ -10,7 +10,7 @@ import DonateLink from '@/components/ui/DonateLink.vue'
         <SkatMark :size="36" class="footer__mark" />
         <div>
           <p class="footer__name">Скат</p>
-          <p class="footer__tag">Бесплатно, без регистрации и рекламы.</p>
+          <p class="footer__tag">Бесплатно, без регистрации , с любовью ❤️️️️️</p>
         </div>
       </div>
       <div class="footer__actions">

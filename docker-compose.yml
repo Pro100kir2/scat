@@ -1,0 +1,52 @@
+# Скат backend (FastAPI + Xray scanner), built from the existing ./Dockerfile.
+#
+# The API is published on 127.0.0.1 only: Caddy on the host terminates HTTPS for
+# api.scat-search.ru and proxies to it. Nothing here listens on a public interface.
+#
+# With COMPOSE_FILE from .env (see .env.example) a plain `docker compose up -d` in
+# this directory starts the backend and the frontend (docker-compose.frontend.yml).
+name: scat
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: scat-backend:latest
+    env_file:
+      - path: .env
+        required: true
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - scat-data:/app/data  # 24h scan cache; survives rebuilds
+    ulimits:
+      nofile:  # the scanner keeps hundreds of SOCKS ports and connections open
+        soft: 65536
+        hard: 65536
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      # The image has no curl; use the Python it already ships.
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=4).status == 200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    stop_grace_period: 20s  # lets Xray child processes shut down
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - scat
+
+volumes:
+  scat-data:
+    name: scat-data
+
+networks:
+  scat:
+    name: scat

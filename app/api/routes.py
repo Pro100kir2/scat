@@ -64,6 +64,22 @@ async def request_scan(request: Request, response: Response):
     return {"outcome": outcome, **scan_service.status()}
 
 
+@router.post("/cache/refresh")
+async def refresh_cache(request: Request, response: Response):
+    """Ignore today's cache and rescan now. Allowed once per REFRESH_COOLDOWN_SECONDS for everyone."""
+    _no_store(response)
+    retry_after = scan_service.refresh_retry_after(config.REFRESH_COOLDOWN_SECONDS)
+    if retry_after:
+        raise HTTPException(
+            status_code=429,
+            detail="Results were refreshed recently",
+            headers={"Retry-After": str(retry_after)},
+        )
+    scan_limiter.check(client_ip(request))
+    outcome = scan_service.refresh()
+    return {"outcome": outcome, "retry_after": config.REFRESH_COOLDOWN_SECONDS, **scan_service.status()}
+
+
 COUNTRY_RE = re.compile(r"^[A-Za-z]{2}$")
 
 
@@ -144,7 +160,7 @@ async def get_vless_subscription(
 @router.get("/vless/raw", response_class=PlainTextResponse)
 async def get_vless_raw(limit: int = Query(default=5, ge=1, le=50)):
     """Top VLESS links as plain text, one per line."""
-    return "\n".join(n["original"] for n in _cached_top()[:limit] if n.get("original"))
+    return "\n".join(n["link"] for n in _cached_top()[:limit] if n.get("link"))
 
 
 @router.get("/sources")

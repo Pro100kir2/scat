@@ -21,7 +21,7 @@ from itertools import zip_longest
 from pathlib import Path
 from statistics import median, pstdev
 from typing import Optional, Dict, Any, List
-from urllib.parse import parse_qs, unquote, urlsplit
+from urllib.parse import parse_qs, quote, unquote, urlencode, urlsplit
 
 import aiohttp
 import certifi
@@ -43,7 +43,9 @@ class XrayStartError(RuntimeError):
 
 @dataclass
 class VLESSNode:
-    original: str
+    """One VLESS config. The fields hold exactly what the scanner tests; `link` serializes them."""
+
+    source_link: str  # as found in the source; never shown to users
     fingerprint: str
     uuid: str
     address: str
@@ -63,6 +65,8 @@ class VLESSNode:
     path: str = ""
     host: str = ""
     service_name: str = ""
+    mode: str = ""  # grpc: "multi" or ""; xhttp: its mode
+    link: str = ""  # the share link users get: build_vless_uri() of the tested fields
     params: dict = field(default_factory=dict)
     local_port: int = 0
     latency_samples: list[float] = field(default_factory=list)
@@ -175,7 +179,8 @@ def clean_vless_candidate(value: str) -> str:
     value = value.strip()
     value = value.rstrip(" \t\r\n.,;)]}\"'")
     value = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", value)
-    return value
+    # Links scraped from HTML pages keep "&amp;" and would silently lose every parameter after it.
+    return value.replace("&amp;", "&")
 
 
 def extract_vless(text: str) -> list[str]:
@@ -262,6 +267,9 @@ def parse_vless(url: str) -> VLESSNode:
         security = "none"
 
     encryption = q(params, "encryption", default="none").strip() or "none"
+    if encryption.lower().startswith("mlkem"):
+        # VLESS Encryption: the scanner only speaks "none", so it could never test this config.
+        raise ValueError("unsupported VLESS encryption")
     flow = q(params, "flow").strip().lower()
     if flow not in XRAY_FLOWS:
         raise ValueError(f"unsupported flow: {flow!r}")
@@ -285,6 +293,26 @@ def parse_vless(url: str) -> VLESSNode:
     path = q(params, "path")
     host = q(params, "host")
     service_name = q(params, "serviceName")
+    mode = q(params, "mode").strip()
+
+    # Keep only what Xray actually uses for this transport and security, so the node,
+    # the tested Xray config and the share link describe the same thing.
+    if security == "none":
+        sni = fingerprint_tls = ""
+    if security != "tls":
+        alpn, allow_insecure = [], False
+    if security == "reality":
+        fingerprint_tls = fingerprint_tls or "chrome"  # Xray needs one for REALITY
+    else:
+        public_key = short_id = spider_x = ""
+    if network not in {"ws", "xhttp", "httpupgrade"}:
+        path = host = ""
+    if network != "grpc":
+        service_name = ""
+    if network == "grpc":
+        mode = "multi" if mode.lower() == "multi" else ""
+    elif network != "xhttp":
+        mode = ""
     name = clean_name(parts.fragment)
     label_country = country_from_name(name)
 
@@ -294,7 +322,6 @@ def parse_vless(url: str) -> VLESSNode:
         "port": parts.port,
         "network": network,
         "security": security,
-        "encryption": encryption,
         "flow": flow,
         "sni": sni,
         "fp": fingerprint_tls,
@@ -306,18 +333,18 @@ def parse_vless(url: str) -> VLESSNode:
         "path": path,
         "host": host,
         "serviceName": service_name,
+        "mode": mode,
     }
 
     fingerprint = short_hash(json.dumps(identity, sort_keys=True, ensure_ascii=False))
 
-    return VLESSNode(
-        original=url,
+    node = VLESSNode(
+        source_link=url,
         fingerprint=fingerprint,
         uuid=uuid,
         address=parts.hostname,
         port=parts.port,
         name=name,
-        encryption=encryption,
         flow=flow,
         network=network,
         security=security,
@@ -331,9 +358,47 @@ def parse_vless(url: str) -> VLESSNode:
         path=path,
         host=host,
         service_name=service_name,
+        mode=mode,
         params=params,
         label_country=label_country or "",
     )
+    node.link = build_vless_uri(node)
+    return node
+
+
+def build_vless_uri(node: VLESSNode) -> str:
+    """Share link for exactly the configuration the scanner tests (see build_outbound).
+
+    Every value is percent-encoded, so clients that parse URIs strictly accept it too.
+    """
+    params = {"encryption": "none", "type": node.network, "security": node.security}
+    optional = {
+        "flow": node.flow,
+        "path": node.path,
+        "host": node.host,
+        "serviceName": node.service_name,
+        "mode": node.mode,
+        "sni": node.sni,
+        "fp": node.fingerprint_tls,
+        "alpn": ",".join(node.alpn),
+        "allowInsecure": "1" if node.allow_insecure else "",
+        "pbk": node.public_key,
+        "sid": node.short_id,
+        "spx": node.spider_x,
+    }
+    params.update({key: value for key, value in optional.items() if value})
+    host = f"[{node.address}]" if ":" in node.address else node.address
+    link = f"vless://{quote(node.uuid, safe='')}@{host}:{node.port}?{urlencode(params, quote_via=quote, safe='')}"
+    return f"{link}#{quote(node.name, safe='')}" if node.name else link
+
+
+def link_matches_tested_config(node: VLESSNode) -> bool:
+    """True when a client importing `node.link` gets the very outbound the scanner tests."""
+    try:
+        again = parse_vless(node.link)
+    except ValueError:
+        return False
+    return build_outbound(again, "check") == build_outbound(node, "check")
 
 
 # ============================================================
@@ -362,9 +427,8 @@ def build_stream_settings(node: VLESSNode) -> dict:
         settings = {}
         if node.service_name:
             settings["serviceName"] = node.service_name
-        mode = q(node.params, "mode").strip().lower()
-        if mode:
-            settings["multiMode"] = mode == "multi"
+        if node.mode == "multi":
+            settings["multiMode"] = True
         stream["grpcSettings"] = settings
 
     elif network == "xhttp":
@@ -373,9 +437,8 @@ def build_stream_settings(node: VLESSNode) -> dict:
             settings["path"] = node.path
         if node.host:
             settings["host"] = node.host
-        mode = q(node.params, "mode").strip()
-        if mode:
-            settings["mode"] = mode
+        if node.mode:
+            settings["mode"] = node.mode
         stream["xhttpSettings"] = settings
 
     elif network == "httpupgrade":
@@ -432,11 +495,8 @@ def validate_nodes_for_xray(nodes: list[VLESSNode]) -> list[VLESSNode]:
                     node.success = False
                     node.error = "REALITY: missing SNI/serverName"
                     continue
-                # shortId is technically optional but often required in practice
-                # We'll allow it but log a warning
-                if not node.short_id:
-                    if DEBUG:
-                        print(f"[Validation] REALITY node {node.address} has no shortId - may fail")
+                # An empty shortId is valid when the server lists "" among its shortIds.
+                # The link then omits sid too, so the scan result is what a client gets.
 
             build_stream_settings(node)
             valid.append(node)
@@ -444,6 +504,29 @@ def validate_nodes_for_xray(nodes: list[VLESSNode]) -> list[VLESSNode]:
             node.success = False
             node.error = f"xray config: {exc}"
     return valid
+
+
+def build_outbound(node: VLESSNode, tag: str) -> dict:
+    """The Xray outbound for a node. Uses the real server port, never the local SOCKS port."""
+    user = {
+        "id": node.uuid,
+        "encryption": "none",  # VLESS requires encryption="none"
+        "level": 0,
+    }
+    if node.flow:
+        user["flow"] = node.flow
+    return {
+        "tag": tag,
+        "protocol": "vless",
+        "settings": {
+            "vnext": [{
+                "address": node.address,
+                "port": node.port,
+                "users": [user],
+            }],
+        },
+        "streamSettings": build_stream_settings(node),
+    }
 
 
 def build_xray_config(nodes: list[VLESSNode]) -> dict:
@@ -485,26 +568,7 @@ def build_xray_config(nodes: list[VLESSNode]) -> dict:
             "settings": {"auth": "noauth", "udp": False},
         })
 
-        user = {
-            "id": node.uuid,
-            "encryption": "none",  # VLESS requires encryption="none"
-            "level": 0,
-        }
-        if node.flow:
-            user["flow"] = node.flow
-
-        outbounds.append({
-            "tag": outbound_tag,
-            "protocol": "vless",
-            "settings": {
-                "vnext": [{
-                    "address": node.address,
-                    "port": node.port,
-                    "users": [user],
-                }],
-            },
-            "streamSettings": build_stream_settings(node),
-        })
+        outbounds.append(build_outbound(node, outbound_tag))
 
         rules.append({
             "type": "field",
@@ -928,6 +992,10 @@ class VLESSScannerManager:
                     node = parse_vless(url)
                 except Exception:
                     continue
+                if not link_matches_tested_config(node):
+                    logger.warning("Skipping %s:%s: its share link would not reproduce the tested config",
+                                   node.address, node.port)
+                    continue
                 if node.fingerprint not in seen:
                     seen.add(node.fingerprint)
                     node.source_index = index
@@ -972,7 +1040,7 @@ class VLESSScannerManager:
             "tested": self.processed_candidates,
             "working": len(candidates),
             "sources": [asdict(r) for r in source_results],
-            "top": [asdict(node) for node in top],
+            "top": [node_result(node) for node in top],
         }
 
     def get_status(self) -> dict:
@@ -988,6 +1056,13 @@ class VLESSScannerManager:
             "elapsed_seconds": round(time.time() - self.started_at, 1)
             if self.started_at and self.lock.locked() else None,
         }
+
+
+def node_result(node: VLESSNode) -> dict:
+    """What the cache keeps. The local SOCKS port only meant something inside this scan."""
+    result = asdict(node)
+    del result["local_port"]
+    return result
 
 
 def order_candidates(nodes: list[VLESSNode], query: ScanQuery) -> list[VLESSNode]:

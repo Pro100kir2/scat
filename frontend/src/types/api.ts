@@ -61,3 +61,8 @@ export interface ResultsResponse extends ScanStatus {
 export interface ScanRequestResponse extends ScanStatus {
   outcome: ScanOutcome
 }
+
+export interface RefreshResponse extends ScanRequestResponse {
+  /** Seconds until anyone may force another refresh. */
+  retry_after: number
+}

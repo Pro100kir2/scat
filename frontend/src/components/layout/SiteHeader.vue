@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 import SkatLogo from '@/components/brand/SkatLogo.vue'
+import DonateLink from '@/components/ui/DonateLink.vue'
 
 const scrolled = ref(false)
 const onScroll = () => (scrolled.value = window.scrollY > 24)
@@ -15,11 +16,14 @@ onBeforeUnmount(() => window.removeEventListener('scroll', onScroll))
   <header class="header" :class="{ 'is-scrolled': scrolled }">
     <div class="container header__inner">
       <SkatLogo />
-      <nav class="header__nav" aria-label="Разделы">
-        <a href="#catch">Улов</a>
-        <a href="#subscribe" class="header__wide">Подписка</a>
-        <a href="#how" class="header__wide">Как это работает</a>
-      </nav>
+      <div class="header__end">
+        <nav class="header__nav" aria-label="Разделы">
+          <a href="#catch">Улов</a>
+          <a href="#subscribe" class="header__wide">Подписка</a>
+          <a href="#how" class="header__wide">Как это работает</a>
+        </nav>
+        <DonateLink small label="Пожертвовать" class="header__donate" />
+      </div>
     </div>
   </header>
 </template>
@@ -45,6 +49,42 @@ onBeforeUnmount(() => window.removeEventListener('scroll', onScroll))
   align-items: center;
   justify-content: space-between;
   height: 68px;
+}
+
+.header__end {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* A pearl-toned pill like the nav links: part of the product, not an ad. */
+.header__donate {
+  --btn-border: rgba(243, 233, 216, 0.2);
+  --btn-bg: rgba(243, 233, 216, 0.03);
+  gap: 8px;
+  font-weight: 500;
+}
+
+.header__donate:hover {
+  --btn-border: rgba(243, 233, 216, 0.45);
+  --btn-bg: rgba(243, 233, 216, 0.07);
+}
+
+@media (max-width: 380px) {
+  /* Heart only on the narrowest phones; the label stays for screen readers. */
+  .header__donate {
+    width: 36px;
+    padding: 0;
+  }
+
+  .header__donate :deep(.donate__label) {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
 }
 
 .header__nav {

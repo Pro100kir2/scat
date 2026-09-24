@@ -1,0 +1,7 @@
+node_modules
+dist
+coverage
+# Build settings come only from the VITE_* build args, never from local .env files.
+.env
+.env.*
+*.log

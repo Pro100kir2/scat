@@ -6,12 +6,17 @@ import DiveLog from './DiveLog.vue'
 import { useScan } from '@/composables/useScan'
 import { useReducedMotion } from '@/composables/useReducedMotion'
 import { useSpotlight } from '@/composables/useSpotlight'
+import { useCooldown } from '@/composables/useCooldown'
 import type { Rect, SceneMode } from '@/ocean/engine'
-import { plural, PEARLS_NOM } from '@/utils/format'
+import { formatCountdown, plural, PEARLS_NOM } from '@/utils/format'
 
 const scan = useScan()
 const reducedMotion = useReducedMotion()
 const { focusRank } = useSpotlight()
+
+const REFRESH_COOLDOWN_SECONDS = 10 * 60
+const refreshCooldown = useCooldown('skat:refresh-until', REFRESH_COOLDOWN_SECONDS)
+const refreshing = ref(false)
 
 const hero = ref<HTMLElement>()
 const content = ref<HTMLElement>()
@@ -42,6 +47,16 @@ function onPrimary() {
     return
   }
   void scan.startSearch()
+}
+
+async function onRefresh() {
+  refreshing.value = true
+  try {
+    const wait = await scan.refreshCatch()
+    if (wait > 0) refreshCooldown.start(wait)
+  } finally {
+    refreshing.value = false
+  }
 }
 
 /** Keep the manta out from behind the headline. */
@@ -105,6 +120,20 @@ onBeforeUnmount(() => observer?.disconnect())
               <AppIcon name="arrowDown" />
             </template>
             <template v-else>Начать поиск</template>
+          </button>
+          <button
+            class="btn hero__refresh"
+            type="button"
+            :disabled="diving || refreshing || refreshCooldown.remaining.value > 0"
+            :title="refreshCooldown.remaining.value ? 'Кэш недавно очищали — можно снова, когда закончится таймер' : 'Забыть сегодняшние результаты и найти свежие'"
+            @click.stop="onRefresh"
+          >
+            <AppIcon name="refresh" />
+            Очистить кэш
+            <span v-if="refreshCooldown.remaining.value" class="mono hero__timer">
+              <span class="visually-hidden">доступно через</span>
+              {{ formatCountdown(refreshCooldown.remaining.value) }}
+            </span>
           </button>
           <a class="btn btn--quiet" href="#how" @click.stop>Как это работает</a>
         </div>
@@ -206,6 +235,22 @@ onBeforeUnmount(() => observer?.disconnect())
   --btn-fg: var(--text);
   --btn-border: var(--line-strong);
   box-shadow: none;
+}
+
+.hero__refresh {
+  min-height: 52px;
+  color: var(--text-2);
+}
+
+.hero__refresh:disabled {
+  opacity: 0.6;
+}
+
+.hero__timer {
+  min-width: 4ch;
+  color: var(--pearl);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
 }
 
 .hero__cta-pulse {
@@ -311,7 +356,8 @@ onBeforeUnmount(() => observer?.disconnect())
     margin-top: 28px;
   }
 
-  .hero__cta {
+  .hero__cta,
+  .hero__refresh {
     flex: 1 1 100%;
   }
 

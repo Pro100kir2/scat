@@ -1,7 +1,7 @@
 import { Environment, type Size } from './environment'
 import { Manta } from './manta'
-import { clamp, damp, easeOutCubic, mulberry32, TAU } from './math'
-import { PearlBed } from './pearls'
+import { clamp, damp, easeOutCubic, mulberry32, smoothstep, TAU } from './math'
+import { PearlBed, type Pearl } from './pearls'
 
 export type SceneMode = 'idle' | 'scanning' | 'replay'
 
@@ -25,6 +25,7 @@ type Plan =
   | { kind: 'investigate'; linger: number }
   | { kind: 'rise'; time: number }
   | { kind: 'seek'; x: number; y: number; time: number }
+  | { kind: 'dig'; pearl: Pearl; time: number }
 
 interface Sonar {
   x: number
@@ -36,6 +37,10 @@ interface Sonar {
 
 const SONAR_SPEED = 260 // px/s across the seabed
 const SONAR_LIFE = 3.2
+/** How long the manta works the sand before the pearl is fully out. */
+const DIG_SECONDS = 2.2
+/** Gap kept between the manta's outline and the canvas edge, px. */
+const EDGE_PAD = 4
 
 export class OceanEngine {
   private readonly ctx: CanvasRenderingContext2D
@@ -146,6 +151,7 @@ export class OceanEngine {
     if (rect.width < 2 || rect.height < 2) return
     const dpr = Math.min(window.devicePixelRatio || 1, this.lite ? 1.5 : 2)
     const size: Size = { width: rect.width, height: rect.height, dpr }
+    const prev = this.env.size
     this.canvas.width = Math.round(size.width * dpr)
     this.canvas.height = Math.round(size.height * dpr)
     this.env.resize(size)
@@ -157,9 +163,25 @@ export class OceanEngine {
       p.y = this.env.seabedY(p.x) + 2
     }
 
+    const m = this.manta
+    if (m && !this.opts.reducedMotion && prev.width > 1) {
+      // Carry the manta and its goal along with the scene instead of leaving them off screen.
+      const kx = size.width / prev.width
+      const ky = size.height / prev.height
+      m.x *= kx
+      m.y *= ky
+      m.target = { ...m.target, x: m.target.x * kx, y: m.target.y * ky }
+      if (this.plan.kind === 'seek') {
+        this.plan.x = clamp(this.plan.x * kx, ...this.reachableX())
+        this.plan.y = this.env.seabedY(this.plan.x) + 2
+      }
+    }
+
     if (!this.manta) this.spawnManta()
     this.manta!.span = (this.lite ? 230 : 330) * this.unit
     if (this.opts.reducedMotion) this.placeStillManta(this.manta!)
+    else if (m) m.target = { ...m.target, ...this.containPoint(m.target.x, m.target.y) }
+    this.containManta(this.manta!)
     this.syncLoop()
     this.redrawIfStatic()
   }
@@ -177,10 +199,12 @@ export class OceanEngine {
       this.manta = m
       return
     }
-    // Glide in from the right edge.
-    const m = new Manta(width + 160 * this.unit, height * (this.lite ? 0.66 : 0.4), Math.PI, this.rand)
+    // Start near the right edge, already fully on screen, and glide left.
+    const m = new Manta(width, height * (this.lite ? 0.66 : 0.4), Math.PI, this.rand)
+    m.span = (this.lite ? 230 : 330) * this.unit
     m.speed = 70 * this.unit
     this.manta = m
+    Object.assign(m, this.containPoint(m.x, m.y))
     this.nextWaypoint()
   }
 
@@ -192,6 +216,7 @@ export class OceanEngine {
     m.x = beside ? width * 0.74 : width * 0.62
     const seabed = this.env.seabedY(m.x)
     m.y = beside ? height * 0.44 : Math.min(seabed - 70 * this.unit, (s.y + s.height + seabed) / 2)
+    this.containManta(m)
   }
 
   private readonly syncLoop = () => {
@@ -222,9 +247,67 @@ export class OceanEngine {
 
   // --- behaviour ----------------------------------------------------------------
 
-  private allowed(x: number, y: number) {
+  /**
+   * Conservative distance from the manta's centre to its outline, for choosing goals.
+   * The exact outline depends on the pose, so containManta() enforces the hard limit.
+   */
+  private reach() {
+    const half = (this.manta?.span ?? 0) * 0.5
+    // Horizontal goals also leave room for the turn: the manta banks round in an arc.
+    return { x: half * 1.1 + 40 * this.unit + EDGE_PAD, y: half * 0.8 + EDGE_PAD }
+  }
+
+  /** Horizontal range for the manta's centre that keeps its wings on screen. */
+  private reachableX(): [number, number] {
+    const { width } = this.env.size
+    const lo = Math.max(width * 0.06, this.reach().x)
+    const hi = Math.min(width * 0.94, width - this.reach().x)
+    return lo <= hi ? [lo, hi] : [width / 2, width / 2]
+  }
+
+  /** Nearest point the manta can aim for without any part of it leaving the canvas. */
+  private containPoint(x: number, y: number) {
+    const { height } = this.env.size
+    const r = this.reach()
+    const top = Math.max(height * 0.12, r.y)
+    const bottom = height - r.y
+    return { x: clamp(x, ...this.reachableX()), y: top <= bottom ? clamp(y, top, bottom) : height / 2 }
+  }
+
+  /**
+   * Hard guarantee: measure the pose actually drawn this frame and keep it inside the canvas.
+   * Steering (containPoint/allowed) keeps this from engaging most of the time; when it does,
+   * it only stops outward motion, so the manta slides along the edge rather than jumping.
+   */
+  /** Ease off the swimming speed when the outline nears a side edge while heading towards it. */
+  private brakeNearEdge(m: Manta) {
+    const { width } = this.env.size
+    const heading = Math.cos(m.yaw)
+    const b = m.bounds
+    const gap = heading > 0 ? width - EDGE_PAD - (m.x + b.right) : m.x + b.left - EDGE_PAD
+    const zone = 90 * this.unit
+    if (gap >= zone || Math.abs(heading) < 0.2) return
+    const limit = Math.max(8 * this.unit, (m.speed * Math.max(gap, 0)) / zone)
+    m.speed = Math.min(m.speed, limit + (m.speed - limit) * (1 - Math.abs(heading)))
+  }
+
+  private containManta(m: Manta) {
     const { width, height } = this.env.size
-    if (x < width * 0.06 || x > width * 0.94 || y < height * 0.12 || y > this.env.seabedY(x) - 40 * this.unit) return false
+    const b = m.pose()
+    const fit = (v: number, lo: number, hi: number) => (lo <= hi ? clamp(v, lo, hi) : (lo + hi) / 2)
+    const x = fit(m.x, EDGE_PAD - b.left, width - EDGE_PAD - b.right)
+    const y = fit(m.y, EDGE_PAD - b.top, height - EDGE_PAD - b.bottom)
+    const touched = x !== m.x || y !== m.y
+    m.x = x
+    m.y = y
+    return touched
+  }
+
+  private allowed(x: number, y: number) {
+    const { height } = this.env.size
+    const [lo, hi] = this.reachableX()
+    const r = this.reach()
+    if (x < lo || x > hi || y < Math.max(height * 0.12, r.y) || y > Math.min(this.env.seabedY(x) - 40 * this.unit, height - r.y)) return false
     const s = this.safe
     if (!s) return true
     const margin = 30 * this.unit
@@ -239,8 +322,9 @@ export class OceanEngine {
     const m = this.manta!
     const { width, height } = this.env.size
 
+    const [lo, hi] = this.reachableX()
     if (this.mode === 'idle' && this.rand() < 0.2) {
-      const x = clamp(m.x + Math.cos(m.yaw) * (150 + this.rand() * 200) * this.unit, width * 0.1, width * 0.9)
+      const x = clamp(m.x + Math.cos(m.yaw) * (150 + this.rand() * 200) * this.unit, Math.max(lo, width * 0.1), Math.min(hi, width * 0.9))
       const y = this.env.seabedY(x) - 55 * this.unit
       if (this.allowed(x, y)) {
         this.plan = { kind: 'investigate', linger: 1.4 + this.rand() * 1.4 }
@@ -250,10 +334,10 @@ export class OceanEngine {
     }
 
     // Sample candidates and prefer gentle turns at a comfortable distance.
-    let best = { x: width * 0.7, y: height * 0.45, score: -Infinity }
+    let best = { ...this.containPoint(width * 0.7, height * 0.45), score: -Infinity }
     const heading = Math.cos(m.yaw)
     for (let i = 0; i < 10; i++) {
-      const x = width * (0.06 + this.rand() * 0.88)
+      const x = lo + this.rand() * (hi - lo)
       const y = height * 0.12 + this.rand() * (this.env.seabedY(x) - height * 0.12 - 40 * this.unit)
       if (!this.allowed(x, y)) continue
       const dx = x - m.x
@@ -266,20 +350,22 @@ export class OceanEngine {
     m.target = { x: best.x, y: best.y, depth: this.rand() * 0.75, speed: this.cruiseSpeed() * (0.85 + this.rand() * 0.3) }
   }
 
-  private pickPearlSpot(): [number, number] {
+  /** A free spot on the sand; `reachable` limits it to where the manta can hover without leaving the screen. */
+  private pickPearlSpot(reachable = false): [number, number] {
     const { width } = this.env.size
+    const [lo, hi] = reachable ? this.reachableX() : [width * 0.05, width * 0.95]
     const m = this.manta
     const dir = m ? Math.sign(Math.cos(m.yaw)) || 1 : 1
     for (let i = 0; i < 16; i++) {
       const ahead = m ? m.x + dir * (90 + this.rand() * 260) * this.unit : width * this.rand()
-      const x = i < 8 ? ahead : width * (0.06 + this.rand() * 0.88)
-      if (x > width * 0.05 && x < width * 0.95 && this.isFreeSpot(x)) return [x, this.env.seabedY(x) + 2]
+      const x = i < 8 ? ahead : lo + this.rand() * (hi - lo)
+      if (x >= lo && x <= hi && this.isFreeSpot(x)) return [x, this.env.seabedY(x) + 2]
     }
     for (let i = 0; i < 24; i++) {
-      const x = width * (0.06 + this.rand() * 0.88)
+      const x = lo + this.rand() * (hi - lo)
       if (this.isFreeSpot(x)) return [x, this.env.seabedY(x) + 2]
     }
-    const x = width * (0.55 + this.rand() * 0.4)
+    const x = lo + (hi - lo) * (0.55 + this.rand() * 0.4)
     return [x, this.env.seabedY(x) + 2]
   }
 
@@ -313,8 +399,39 @@ export class OceanEngine {
     this.checkDrained()
   }
 
+  /** The manta reached the spot: bury the pearl and start digging it out. */
+  private startDig(x: number, y: number) {
+    // Past the cap discoveries are only distant glints; nothing to dig for.
+    if (this.revealed >= this.maxPearls()) {
+      this.revealAt(x, y, true)
+      this.riseAfterFind(x, y)
+      return
+    }
+    this.queue -= 1
+    this.plan = { kind: 'dig', pearl: this.pearls.bury(x, y, this.revealed + 1), time: 0 }
+  }
+
+  /** The pearl is out of the sand: count it and carry on exactly as a plain reveal would. */
+  private finishDig(pearl: Pearl) {
+    this.revealed += 1
+    this.pearls.unearth(pearl, this.revealed)
+    this.sonars.push({ x: pearl.x, y: pearl.y, age: 0, pending: [] })
+    this.opts.onReveal(this.revealed)
+    this.riseAfterFind(pearl.x, pearl.y)
+    this.checkDrained()
+  }
+
+  private riseAfterFind(x: number, y: number) {
+    const m = this.manta!
+    m.celebrate()
+    this.plan = { kind: 'rise', time: 1.6 }
+    m.target = { x: m.x + Math.cos(m.yaw) * 200 * this.unit, y: m.y - 150 * this.unit, depth: m.depth, speed: 90 }
+    Object.assign(m.target, this.containPoint(m.target.x, m.target.y))
+    if (this.mode === 'replay' && !this.replayWaveSent) this.sendReplayWave(x, y)
+  }
+
   private checkDrained() {
-    if (this.queue === 0 && this.sonars.every((s) => s.pending.length === 0)) {
+    if (this.queue === 0 && this.plan.kind !== 'dig' && this.sonars.every((s) => s.pending.length === 0)) {
       queueMicrotask(() => this.opts.onDrained())
     }
   }
@@ -329,16 +446,15 @@ export class OceanEngine {
     // A little shy: if the cursor comes close, drift away from it.
     if (p.inside && this.plan.kind === 'wander' && m.distanceTo(p.x, p.y) < 110 * this.unit) {
       const away = Math.sign(m.x - p.x) || 1
-      m.target = { ...m.target, x: clamp(m.x + away * 240 * this.unit, 0, this.env.size.width), y: m.y - 60 * this.unit, speed: 84 }
+      m.target = { ...m.target, ...this.containPoint(m.x + away * 240 * this.unit, m.y - 60 * this.unit), speed: 84 }
     }
 
-    // Discoveries: swim to the spot, then let the pearl appear under the manta.
-    if (this.queue > 0 && this.plan.kind !== 'seek') {
+    // Discoveries: swim to the spot, dig the pearl out of the sand, then rise.
+    if (this.queue > 0 && this.plan.kind !== 'seek' && this.plan.kind !== 'dig') {
       const outstanding = this.sonars.reduce((n, s) => n + s.pending.length, 0)
       if (this.queue > outstanding) {
-        const [x, y] = this.pickPearlSpot()
+        const [x, y] = this.pickPearlSpot(true)
         this.plan = { kind: 'seek', x, y, time: 0 }
-        m.target = { x, y: y - 48 * this.unit, depth: 0.12, speed: 58 }
       }
     }
 
@@ -346,21 +462,28 @@ export class OceanEngine {
     const arrived = m.distanceTo(m.target.x, m.target.y) < 36 * this.unit
     if (plan.kind === 'seek') {
       plan.time += dt
+      // Recomputed every frame so a resize can't leave the goal off screen.
+      const hover = this.containPoint(plan.x, plan.y - 48 * this.unit)
+      m.target = { ...hover, depth: 0.12, speed: 58 }
       // Normally the manta gets there in 2–4 s; never let a missed approach stall the story.
-      if (m.distanceTo(plan.x, plan.y - 48 * this.unit) < 44 * this.unit || plan.time > 7) {
-        this.revealAt(plan.x, plan.y, true)
-        m.celebrate()
-        this.plan = { kind: 'rise', time: 1.6 }
-        m.target = { x: m.x + Math.cos(m.yaw) * 200 * this.unit, y: m.y - 150 * this.unit, depth: m.depth, speed: 90 }
-        if (this.mode === 'replay' && !this.replayWaveSent) this.sendReplayWave(plan.x, plan.y)
-      }
+      if (m.distanceTo(hover.x, hover.y) < 44 * this.unit || plan.time > 7) this.startDig(plan.x, plan.y)
+    } else if (plan.kind === 'dig') {
+      plan.time += dt
+      const pearl = plan.pearl
+      // Glide slowly and low over the spot, like the investigate linger, while the wings work the sand.
+      m.target = { ...this.containPoint(m.x + Math.cos(m.yaw) * 40 * this.unit, pearl.y - 34 * this.unit), depth: 0.1, speed: 16 }
+      const k = plan.time / DIG_SECONDS
+      pearl.buried = 1 - smoothstep(0.2, 0.92, k)
+      const effort = smoothstep(0, 0.15, k) * (1 - smoothstep(0.8, 1, k))
+      this.pearls.stir(pearl.x, pearl.y, effort * (this.lite ? 26 : 44), this.unit, dt)
+      if (plan.time >= DIG_SECONDS) this.finishDig(pearl)
     } else if (plan.kind === 'investigate') {
       if (arrived) {
         plan.linger -= dt
-        m.target = { ...m.target, x: m.x + Math.cos(m.yaw) * 60, speed: 18 }
+        m.target = { ...m.target, ...this.containPoint(m.x + Math.cos(m.yaw) * 60, m.target.y), speed: 18 }
         if (plan.linger <= 0) {
           this.plan = { kind: 'rise', time: 2 }
-          m.target = { x: m.x + Math.cos(m.yaw) * 220 * this.unit, y: m.y - 190 * this.unit, depth: m.depth, speed: 92 }
+          m.target = { ...this.containPoint(m.x + Math.cos(m.yaw) * 220 * this.unit, m.y - 190 * this.unit), depth: m.depth, speed: 92 }
         }
       }
     } else if (plan.kind === 'rise') {
@@ -372,7 +495,7 @@ export class OceanEngine {
 
     // Busy scans produce more discoveries than one manta can visit: show the
     // surplus as quick glints so the counter never lags far behind reality.
-    if (this.plan.kind === 'seek' && this.queue > 2) {
+    if ((this.plan.kind === 'seek' || this.plan.kind === 'dig') && this.queue > 2) {
       this.overflowTimer -= dt
       if (this.overflowTimer <= 0) {
         this.overflowTimer = 0.28
@@ -399,7 +522,10 @@ export class OceanEngine {
     }
     this.sonars = this.sonars.filter((s) => s.age < SONAR_LIFE || s.pending.length)
 
+    this.brakeNearEdge(m)
     m.update(dt, this.unit)
+    // Brushing an edge while wandering: pick a new heading instead of pressing against it.
+    if (this.containManta(m) && this.plan.kind === 'wander') this.nextWaypoint()
     this.pearls.update(dt)
   }
 

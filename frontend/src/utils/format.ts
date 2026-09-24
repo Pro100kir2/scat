@@ -35,6 +35,12 @@ export function formatUntil(iso: string, now = Date.now()): string | null {
   return `через ${Math.round(minutes / 60)} ч`
 }
 
+/** Seconds as a timer: 600 → "10:00", 65 → "1:05". */
+export function formatCountdown(seconds: number): string {
+  const s = Math.max(0, Math.ceil(seconds))
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
+}
+
 let regionNames: Intl.DisplayNames | null = null
 export function countryName(code: string | null): string | null {
   if (!code) return null

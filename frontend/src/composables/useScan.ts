@@ -1,6 +1,6 @@
 import { computed, readonly, ref, shallowRef } from 'vue'
-import { ApiError, fetchResults, fetchStatus, requestScan } from '@/services/api'
-import type { PearlNode, ScanStatus } from '@/types/api'
+import { ApiError, fetchResults, fetchStatus, requestRefresh, requestScan } from '@/services/api'
+import type { PearlNode, ScanRequestResponse, ScanStatus } from '@/types/api'
 
 /**
  * - `resting`   nothing is happening; results (if any) are on the page
@@ -118,37 +118,74 @@ async function init() {
   if (status.value?.is_scanning) beginLiveDive(status.value)
 }
 
-/** The main call to action. Never triggers more than the server allows. */
-async function startSearch() {
-  if (journey.value === 'diving') return
+/**
+ * Asks the server for a dive and plays it: live when a scan runs, a replay of the
+ * cached catch otherwise. Request errors reset the journey and are rethrown.
+ */
+async function dive<T extends ScanRequestResponse>(send: (signal?: AbortSignal) => Promise<T>): Promise<T | null> {
+  if (journey.value === 'diving') return null
   scanError.value = null
   cooldown.value = false
   found.value = 0
   journey.value = 'diving'
 
+  let res: T
   try {
-    const res = await requestScan(controller?.signal)
-    status.value = res
-    if (res.outcome === 'started' || res.outcome === 'joined') {
-      beginLiveDive(res)
-      return
-    }
-    if (res.outcome === 'cooldown') cooldown.value = true
-    if (!nodes.value.length) await refreshResults()
-    if (!nodes.value.length) {
-      journey.value = 'resting'
-      if (res.outcome === 'cooldown') scanError.value = new ApiError('server', 'Scanner cooling down')
-      return
-    }
-    // Today's catch already exists: replay the dive, the scene reveals each pearl.
-    diveKind.value = 'replay'
-    found.value = nodes.value.length
+    res = await send(controller?.signal)
   } catch (err) {
     const apiErr = asApiError(err)
-    if (apiErr.kind === 'aborted') return
-    logError('starting a search failed', apiErr)
-    scanError.value = apiErr
-    journey.value = nodes.value.length ? 'surfaced' : 'resting'
+    if (apiErr.kind !== 'aborted') journey.value = nodes.value.length ? 'surfaced' : 'resting'
+    throw apiErr
+  }
+
+  status.value = res
+  if (res.outcome === 'started' || res.outcome === 'joined') {
+    beginLiveDive(res)
+    return res
+  }
+  if (res.outcome === 'cooldown') cooldown.value = true
+  if (!nodes.value.length) await refreshResults()
+  if (!nodes.value.length) {
+    journey.value = 'resting'
+    if (res.outcome === 'cooldown') scanError.value = new ApiError('server', 'Scanner cooling down')
+    return res
+  }
+  // Today's catch already exists: replay the dive, the scene reveals each pearl.
+  diveKind.value = 'replay'
+  found.value = nodes.value.length
+  return res
+}
+
+function reportScanError(err: unknown) {
+  const apiErr = asApiError(err)
+  if (apiErr.kind === 'aborted') return
+  logError('starting a search failed', apiErr)
+  scanError.value = apiErr
+}
+
+/** The main call to action. Never triggers more than the server allows. */
+async function startSearch() {
+  try {
+    await dive(requestScan)
+  } catch (err) {
+    reportScanError(err)
+  }
+}
+
+/**
+ * Drops today's cached catch and dives for a fresh one.
+ * Resolves to the seconds until the next refresh is allowed (0 when it can be retried now).
+ */
+async function refreshCatch(): Promise<number> {
+  try {
+    const res = await dive(requestRefresh)
+    return res?.retry_after ?? 0
+  } catch (err) {
+    const apiErr = asApiError(err)
+    // Someone refreshed recently: the button's countdown explains it, no error needed.
+    if (apiErr.kind === 'rate_limit') return apiErr.retryAfter ?? 60
+    reportScanError(apiErr)
+    return 0
   }
 }
 
@@ -179,6 +216,7 @@ export function useScan() {
     cache: computed(() => status.value?.cache ?? null),
     init,
     startSearch,
+    refreshCatch,
     completeReplay,
     retry: init,
     /** Wire lifecycle once from the root component. */

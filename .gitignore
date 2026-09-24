@@ -33,8 +33,9 @@ xray_*.json
 *.tmp
 *.temp
 
-# Local configuration
-config.txt
+# Platform-specific Xray binaries
+xray
+xray.zip
 
 # OS
 .DS_Store

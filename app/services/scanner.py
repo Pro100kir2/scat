@@ -365,6 +365,21 @@ def validate_nodes_for_xray(nodes: list[VLESSNode]) -> list[VLESSNode]:
     valid = []
     for node in nodes:
         try:
+            # Validate REALITY requirements
+            if node.security == "reality":
+                if not node.public_key:
+                    node.success = False
+                    node.error = "REALITY: missing publicKey"
+                    continue
+                if not node.short_id:
+                    node.success = False
+                    node.error = "REALITY: missing shortId"
+                    continue
+                if not node.sni:
+                    node.success = False
+                    node.error = "REALITY: missing SNI/serverName"
+                    continue
+
             build_stream_settings(node)
             valid.append(node)
         except Exception as exc:
@@ -726,11 +741,18 @@ class VLESSScannerManager:
                 stderr=asyncio.subprocess.PIPE,
             )
 
-            await asyncio.sleep(0.25)
+            await asyncio.sleep(1.0)  # Increased from 0.25 to 1.0 for slower systems
 
             if process.returncode is not None:
                 stdout, stderr = await process.communicate()
-                raise RuntimeError(f"Xray process failed to start: {stderr.decode(errors='ignore')}")
+                stdout_text = stdout.decode(errors='ignore').strip()
+                stderr_text = stderr.decode(errors='ignore').strip()
+                error_msg = f"Xray process failed to start (exit code {process.returncode})"
+                if stderr_text:
+                    error_msg += f": {stderr_text}"
+                if stdout_text:
+                    error_msg += f"\nstdout: {stdout_text}"
+                raise RuntimeError(error_msg)
 
             try:
                 await self._check_batch(compatible, attempts=attempts)

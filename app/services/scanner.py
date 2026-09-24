@@ -26,6 +26,8 @@ from aiohttp_socks import ProxyConnector
 
 from app import config
 
+DEBUG = os.getenv("DEBUG", "false").lower() in ("true", "1", "yes")
+
 
 # ============================================================
 # DATA STRUCTURES
@@ -365,20 +367,24 @@ def validate_nodes_for_xray(nodes: list[VLESSNode]) -> list[VLESSNode]:
     valid = []
     for node in nodes:
         try:
+            # Reset local_port before validation
+            node.local_port = 0
+
             # Validate REALITY requirements
             if node.security == "reality":
                 if not node.public_key:
                     node.success = False
                     node.error = "REALITY: missing publicKey"
                     continue
-                if not node.short_id:
-                    node.success = False
-                    node.error = "REALITY: missing shortId"
-                    continue
                 if not node.sni:
                     node.success = False
                     node.error = "REALITY: missing SNI/serverName"
                     continue
+                # shortId is technically optional but often required in practice
+                # We'll allow it but log a warning
+                if not node.short_id:
+                    if DEBUG:
+                        print(f"[Validation] REALITY node {node.address} has no shortId - may fail")
 
             build_stream_settings(node)
             valid.append(node)
@@ -554,7 +560,8 @@ class VLESSScannerManager:
                 continue
             if " #" in line:
                 line = line.split(" #", 1)[0].strip()
-            if not line or not (line.startswith("http://") or line.startswith("https://")):
+            # Accept both remote URLs and direct VLESS links
+            if not line or not (line.startswith("http://") or line.startswith("https://") or line.startswith("vless://")):
                 continue
             sources.append(line)
         return list(dict.fromkeys(sources))
@@ -624,7 +631,10 @@ class VLESSScannerManager:
         start = time.perf_counter()
 
         try:
-            connector = ProxyConnector.from_url(proxy, rdns=True, ssl=True)
+            # Disable SSL verification for REALITY nodes (they use fake certificates)
+            # or when allow_insecure is explicitly set
+            ssl_verify = node.security != "reality" and not node.allow_insecure
+            connector = ProxyConnector.from_url(proxy, rdns=True, ssl=ssl_verify)
             timeout = aiohttp.ClientTimeout(
                 total=config.TIMEOUT,
                 connect=config.TIMEOUT,
@@ -645,7 +655,19 @@ class VLESSScannerManager:
         except asyncio.TimeoutError:
             return False, None, None, "timeout"
         except Exception as exc:
-            return False, None, None, f"{type(exc).__name__}: {exc}"
+            error_msg = f"{type(exc).__name__}"
+            if hasattr(exc, 'args') and exc.args:
+                error_msg += f": {exc.args[0]}"
+            # Add more context for common errors
+            if "ClientOSError" in error_msg:
+                error_msg += f" (SOCKS5 proxy 127.0.0.1:{node.local_port} not responding - Xray may have failed)"
+            elif "ConnectorError" in error_msg:
+                error_msg += " (could not connect to proxy)"
+            elif "TimeoutError" in error_msg:
+                error_msg += " (connection timeout)"
+            if DEBUG:
+                print(f"[Node Test Error] {node.address}:{node.port} ({node.network}/{node.security}) - {error_msg}")
+            return False, None, None, error_msg
         finally:
             if connector:
                 try:
@@ -732,6 +754,9 @@ class VLESSScannerManager:
             xray_config = build_xray_config(compatible)
             config_path.write_text(json.dumps(xray_config, ensure_ascii=False, indent=2), encoding="utf-8")
 
+            if DEBUG:
+                print(f"[Xray Config] Testing {len(compatible)} nodes with ports {[n.local_port for n in compatible[:3]]}...")
+
             process = await asyncio.create_subprocess_exec(
                 xray_binary,
                 "run",
@@ -752,7 +777,26 @@ class VLESSScannerManager:
                     error_msg += f": {stderr_text}"
                 if stdout_text:
                     error_msg += f"\nstdout: {stdout_text}"
+                if DEBUG:
+                    print(f"[Xray Error] {error_msg}")
                 raise RuntimeError(error_msg)
+
+            if DEBUG:
+                print(f"[Xray] Process started successfully for {len(compatible)} nodes")
+
+            # Check if Xray actually opened the SOCKS5 ports (only in DEBUG)
+            if DEBUG:
+                import socket
+                for node in compatible:
+                    try:
+                        test_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                        test_sock.settimeout(0.5)
+                        result = test_sock.connect_ex(('127.0.0.1', node.local_port))
+                        test_sock.close()
+                        if result != 0:
+                            print(f"[Xray Port Check] Port {node.local_port} not open - Xray may have failed for {node.address}")
+                    except Exception as e:
+                        print(f"[Xray Port Check] Error checking port {node.local_port}: {e}")
 
             try:
                 await self._check_batch(compatible, attempts=attempts)
@@ -766,6 +810,8 @@ class VLESSScannerManager:
                             process.kill()
                         except Exception:
                             pass
+                if DEBUG:
+                    print(f"[Xray] Process terminated for batch")
             return compatible
         finally:
             config_path.unlink(missing_ok=True)
@@ -791,10 +837,21 @@ class VLESSScannerManager:
                 if not sources:
                     raise RuntimeError("No sources found in config.txt")
 
-                downloaded, source_results = await self._download_all_sources(sources)
+                # Separate direct VLESS links from remote URLs
+                direct_vless_links = [s for s in sources if s.startswith("vless://")]
+                remote_urls = [s for s in sources if not s.startswith("vless://")]
+
+                downloaded, source_results = await self._download_all_sources(remote_urls)
+
+                # Add direct VLESS links to source results
+                for link in direct_vless_links:
+                    source_results.append(SourceResult(link, True, "direct VLESS link"))
 
                 self.stage = "parsing"
                 all_urls = []
+                # Add direct VLESS links
+                all_urls.extend(direct_vless_links)
+                # Add URLs from downloaded sources
                 for source_url, body in downloaded:
                     urls = extract_source_nodes(body)
                     all_urls.extend(urls)
@@ -825,6 +882,11 @@ class VLESSScannerManager:
                         working = await self._scan_batch_with_xray(
                             xray_binary, batch, attempts=1 + config.RETRIES
                         )
+                        # Mark nodes that failed validation (local_port == 0)
+                        for node in batch:
+                            if node.local_port == 0 and not node.error:
+                                node.error = "validation failed before Xray config"
+                                node.success = False
                         all_working.extend([n for n in working if n.success])
                     except Exception as exc:
                         print(f"[Scanner] Batch error: {exc}")

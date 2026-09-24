@@ -210,6 +210,9 @@ function renderTopNodes(nodes) {
 function copyNodeConfig(index) {
     if (currentTopNodes[index] && currentTopNodes[index].original) {
         copyToClipboard(currentTopNodes[index].original, `Copied Config #${index + 1} to clipboard!`);
+    } else {
+        showToast('No config available to copy', 'error');
+        console.error('Node data:', currentTopNodes[index]);
     }
 }
 
@@ -259,18 +262,35 @@ function closeModal() {
 }
 
 function copyToClipboard(text, message = 'Copied to clipboard!') {
-    navigator.clipboard.writeText(text).then(() => {
-        showToast(message);
-    }).catch(() => {
-        // Fallback for older browsers
-        const textarea = document.createElement('textarea');
-        textarea.value = text;
-        document.body.appendChild(textarea);
-        textarea.select();
+    // Check if Clipboard API is available
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(() => {
+            showToast(message);
+        }).catch(() => {
+            // Fallback if API fails
+            fallbackCopy(text, message);
+        });
+    } else {
+        // Fallback for browsers without Clipboard API
+        fallbackCopy(text, message);
+    }
+}
+
+function fallbackCopy(text, message) {
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.style.position = 'fixed';
+    textarea.style.left = '-9999px';
+    document.body.appendChild(textarea);
+    textarea.select();
+    try {
         document.execCommand('copy');
-        document.body.removeChild(textarea);
         showToast(message);
-    });
+    } catch (err) {
+        console.error('Fallback copy failed:', err);
+        showToast('Failed to copy to clipboard', 'error');
+    }
+    document.body.removeChild(textarea);
 }
 
 function showToast(message, type = 'success') {

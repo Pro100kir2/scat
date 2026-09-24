@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { ApiError, fetchResults, requestScan } from '@/services/api'
+import { ApiError, clearCache, fetchResults, requestScan } from '@/services/api'
 
 const status = { cache_state: 'fresh', is_scanning: false, progress: null, last_scan_failed: false, cache: null }
 const results = { ...status, nodes: [{ id: 'a', link: 'vless://x', rank: 1 }] }
@@ -18,6 +18,14 @@ afterEach(() => {
 })
 
 describe('api client', () => {
+  it('sends POST to clear cache', async () => {
+    const fetch = vi.fn().mockResolvedValue(reply({ outcome: 'started', ...status }))
+    vi.stubGlobal('fetch', fetch)
+    const data = await clearCache()
+    expect(data.outcome).toBe('started')
+    expect(fetch).toHaveBeenCalledWith(expect.stringContaining('/api/cache/clear'), expect.objectContaining({ method: 'POST' }))
+  })
+
   it('returns validated results', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(reply(results)))
     const data = await fetchResults()

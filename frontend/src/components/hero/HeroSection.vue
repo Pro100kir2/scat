@@ -32,6 +32,40 @@ const diving = computed(() => scan.journey.value === 'diving')
 const catchCount = computed(() => scan.nodes.value.length)
 const showCounter = computed(() => scan.journey.value !== 'resting')
 
+const COOLDOWN_KEY = 'skat_reset_cooldown_until'
+const resetSecondsLeft = ref(0)
+let timerInterval: ReturnType<typeof setInterval> | undefined
+
+const formattedResetTimer = computed(() => {
+  const m = Math.floor(resetSecondsLeft.value / 60)
+  const s = resetSecondsLeft.value % 60
+  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+})
+
+const isResetDisabled = computed(() => diving.value || resetSecondsLeft.value > 0)
+
+function updateResetTimer() {
+  const stored = localStorage.getItem(COOLDOWN_KEY)
+  if (!stored) {
+    resetSecondsLeft.value = 0
+    return
+  }
+  const endTime = Number(stored)
+  const remaining = Math.max(0, Math.ceil((endTime - Date.now()) / 1000))
+  resetSecondsLeft.value = remaining
+  if (remaining <= 0) {
+    localStorage.removeItem(COOLDOWN_KEY)
+  }
+}
+
+function onResetCache() {
+  if (isResetDisabled.value) return
+  const endTime = Date.now() + 10 * 60 * 1000
+  localStorage.setItem(COOLDOWN_KEY, String(endTime))
+  updateResetTimer()
+  void scan.resetCache()
+}
+
 function onDrained() {
   if (mode.value === 'replay') scan.completeReplay()
 }
@@ -57,8 +91,13 @@ onMounted(() => {
   observer = new ResizeObserver(measure)
   if (hero.value) observer.observe(hero.value)
   if (content.value) observer.observe(content.value)
+  updateResetTimer()
+  timerInterval = setInterval(updateResetTimer, 1000)
 })
-onBeforeUnmount(() => observer?.disconnect())
+onBeforeUnmount(() => {
+  observer?.disconnect()
+  if (timerInterval) clearInterval(timerInterval)
+})
 </script>
 
 <template>
@@ -106,6 +145,17 @@ onBeforeUnmount(() => observer?.disconnect())
             </template>
             <template v-else>Начать поиск</template>
           </button>
+
+          <button
+            class="btn btn--secondary hero__reset"
+            type="button"
+            :disabled="isResetDisabled"
+            @click.stop="onResetCache"
+          >
+            Сбросить кеш
+            <span v-if="resetSecondsLeft > 0" class="hero__timer mono">({{ formattedResetTimer }})</span>
+          </button>
+
           <a class="btn btn--quiet" href="#how" @click.stop>Как это работает</a>
         </div>
 
@@ -214,6 +264,26 @@ onBeforeUnmount(() => observer?.disconnect())
   border-radius: 50%;
   background: var(--aqua);
   animation: breathe 1.8s var(--ease-in-out) infinite;
+}
+
+.hero__reset {
+  min-height: 52px;
+  padding: 0 20px;
+  font-size: 15px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.hero__reset:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.hero__timer {
+  font-size: 14px;
+  color: var(--pearl);
+  opacity: 0.9;
 }
 
 .hero__status {

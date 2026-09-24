@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 import SkatLogo from '@/components/brand/SkatLogo.vue'
+import DonateLink from '@/components/ui/DonateLink.vue'
 
 const scrolled = ref(false)
 const onScroll = () => (scrolled.value = window.scrollY > 24)
@@ -19,6 +20,7 @@ onBeforeUnmount(() => window.removeEventListener('scroll', onScroll))
         <a href="#catch">Улов</a>
         <a href="#subscribe" class="header__wide">Подписка</a>
         <a href="#how" class="header__wide">Как это работает</a>
+        <DonateLink small label="Пожертвовать" />
       </nav>
     </div>
   </header>
@@ -49,7 +51,8 @@ onBeforeUnmount(() => window.removeEventListener('scroll', onScroll))
 
 .header__nav {
   display: flex;
-  gap: 4px;
+  align-items: center;
+  gap: 6px;
 }
 
 .header__nav a {

@@ -2,7 +2,7 @@
 import { env } from '@/config/env'
 import AppIcon from './AppIcon.vue'
 
-defineProps<{ small?: boolean }>()
+defineProps<{ small?: boolean; label?: string }>()
 </script>
 
 <template>
@@ -15,7 +15,7 @@ defineProps<{ small?: boolean }>()
     rel="noopener noreferrer"
   >
     <AppIcon name="heart" class="donate__heart" />
-    Поддержать Ската
+    {{ label ?? 'Поддержать Ската' }}
   </a>
 </template>
 

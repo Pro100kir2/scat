@@ -6,6 +6,7 @@ import HeroSection from '@/components/hero/HeroSection.vue'
 import ResultsSection from '@/components/results/ResultsSection.vue'
 import SubscriptionSection from '@/components/sections/SubscriptionSection.vue'
 import HowItWorks from '@/components/sections/HowItWorks.vue'
+import NoticeModal from '@/components/ui/NoticeModal.vue'
 import { useScan } from '@/composables/useScan'
 
 const scan = useScan()
@@ -22,4 +23,5 @@ onBeforeUnmount(scan.detach)
     <HowItWorks />
   </main>
   <SiteFooter />
+  <NoticeModal />
 </template>

@@ -64,6 +64,16 @@ async def request_scan(request: Request, response: Response):
     return {"outcome": outcome, **scan_service.status()}
 
 
+@router.post("/cache/clear")
+async def clear_cache(request: Request, response: Response):
+    """Clear cached scan results and start a new scan."""
+    _no_store(response)
+    scan_limiter.check(client_ip(request))
+    scan_service.clear()
+    outcome = scan_service.request_scan()
+    return {"outcome": outcome, **scan_service.status()}
+
+
 COUNTRY_RE = re.compile(r"^[A-Za-z]{2}$")
 
 

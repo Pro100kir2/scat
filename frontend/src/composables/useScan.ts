@@ -1,5 +1,5 @@
 import { computed, readonly, ref, shallowRef } from 'vue'
-import { ApiError, fetchResults, fetchStatus, requestScan } from '@/services/api'
+import { ApiError, clearCache, fetchResults, fetchStatus, requestScan } from '@/services/api'
 import type { PearlNode, ScanStatus } from '@/types/api'
 
 /**
@@ -152,6 +152,37 @@ async function startSearch() {
   }
 }
 
+/** Clears server cache and triggers a fresh scan. */
+async function resetCache() {
+  if (journey.value === 'diving') return
+  scanError.value = null
+  cooldown.value = false
+  found.value = 0
+  journey.value = 'diving'
+
+  try {
+    const res = await clearCache(controller?.signal)
+    status.value = res
+    if (res.outcome === 'started' || res.outcome === 'joined') {
+      beginLiveDive(res)
+      return
+    }
+    if (!nodes.value.length) await refreshResults()
+    if (!nodes.value.length) {
+      journey.value = 'resting'
+      return
+    }
+    diveKind.value = 'replay'
+    found.value = nodes.value.length
+  } catch (err) {
+    const apiErr = asApiError(err)
+    if (apiErr.kind === 'aborted') return
+    logError('resetting cache failed', apiErr)
+    scanError.value = apiErr
+    journey.value = nodes.value.length ? 'surfaced' : 'resting'
+  }
+}
+
 /** Called by the scene once the replay has shown every pearl. */
 function completeReplay() {
   if (journey.value === 'diving' && diveKind.value === 'replay') journey.value = 'surfaced'
@@ -179,6 +210,7 @@ export function useScan() {
     cache: computed(() => status.value?.cache ?? null),
     init,
     startSearch,
+    resetCache,
     completeReplay,
     retry: init,
     /** Wire lifecycle once from the root component. */

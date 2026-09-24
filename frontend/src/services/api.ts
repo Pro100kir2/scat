@@ -134,3 +134,9 @@ export async function requestScan(signal?: AbortSignal): Promise<ScanRequestResp
   assertStatus(data)
   return data as ScanRequestResponse
 }
+
+export async function clearCache(signal?: AbortSignal): Promise<ScanRequestResponse> {
+  const data = await request('/api/cache/clear', { method: 'POST', signal })
+  assertStatus(data)
+  return data as ScanRequestResponse
+}

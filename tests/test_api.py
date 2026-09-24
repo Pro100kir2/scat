@@ -64,6 +64,16 @@ def test_post_scan_with_fresh_cache_is_a_cache_hit(client, api_service):
     assert api_service.scanner.runs == 1
 
 
+def test_public_clear_cache(client, api_service):
+    fill_cache(api_service)
+    assert api_service.cache_state() == "fresh"
+    response = client.post("/api/cache/clear")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["outcome"] == "started"
+    assert api_service.cache_state() == "empty"
+
+
 def test_scan_status(client):
     data = client.get("/api/scan/status").json()
     assert set(data) >= {"cache_state", "is_scanning", "queued", "progress", "cache", "last_scan_failed"}

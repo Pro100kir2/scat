@@ -1,0 +1,301 @@
+:root {
+  color-scheme: dark;
+
+  /* Water, from the sunlit surface down to the abyss the page settles into. */
+  --abyss: #050d14;
+  --deep: #07141d;
+  --sea: #0b1c27;
+  --sea-2: #102634;
+  --sea-3: #163245;
+
+  --line: rgba(168, 208, 222, 0.1);
+  --line-strong: rgba(168, 208, 222, 0.2);
+
+  --text: #e6eef1;
+  --text-2: #a4b8c2;
+  --text-3: #6f8795;
+
+  /* Interaction: calm aqua. Discovery: pearl. They never swap roles. */
+  --aqua: #8fd6cf;
+  --aqua-soft: rgba(143, 214, 207, 0.12);
+  --pearl: #f3e9d8;
+  --pearl-2: #dcccb4;
+  --pearl-glow: rgba(243, 233, 216, 0.32);
+  --coral: #ec9a86;
+  --coral-soft: rgba(236, 154, 134, 0.12);
+  --sand: #dfc189;
+
+  --font-display: 'Cormorant Garamond', 'Georgia', serif;
+  --font-ui: 'Manrope Variable', 'Manrope', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono Variable', 'JetBrains Mono', ui-monospace, 'SFMono-Regular', monospace;
+
+  --radius: 16px;
+  --radius-sm: 10px;
+  --gutter: clamp(16px, 4vw, 40px);
+  --content: 1120px;
+
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --ease-spring: cubic-bezier(0.34, 1.4, 0.64, 1);
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+  -webkit-text-size-adjust: 100%;
+  background: var(--abyss);
+}
+
+body {
+  margin: 0;
+  min-height: 100svh;
+  background: var(--abyss);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: 16px;
+  line-height: 1.6;
+  font-feature-settings: 'ss01', 'cv11';
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  overflow-x: hidden;
+}
+
+h1,
+h2,
+h3 {
+  margin: 0;
+  font-weight: 500;
+  text-wrap: balance;
+}
+
+p {
+  margin: 0;
+  text-wrap: pretty;
+}
+
+a {
+  color: inherit;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+}
+
+::selection {
+  background: rgba(243, 233, 216, 0.25);
+  color: #fff;
+}
+
+:focus-visible {
+  outline: 2px solid var(--aqua);
+  outline-offset: 3px;
+  border-radius: 6px;
+}
+
+.container {
+  width: 100%;
+  max-width: calc(var(--content) + var(--gutter) * 2);
+  margin-inline: auto;
+  padding-inline: var(--gutter);
+}
+
+.mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+.section-title {
+  font-family: var(--font-display);
+  font-size: clamp(2rem, 4.2vw, 3rem);
+  line-height: 1.05;
+  letter-spacing: -0.01em;
+}
+
+.section-title em {
+  font-style: italic;
+  color: var(--pearl);
+}
+
+.visually-hidden {
+  position: absolute !important;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+/* Buttons ------------------------------------------------------------------ */
+
+.btn {
+  --btn-bg: transparent;
+  --btn-fg: var(--text);
+  --btn-border: var(--line-strong);
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 44px;
+  padding: 0 20px;
+  border: 1px solid var(--btn-border);
+  border-radius: 999px;
+  background: var(--btn-bg);
+  color: var(--btn-fg);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.005em;
+  text-decoration: none;
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    background-color 0.25s var(--ease-out),
+    border-color 0.25s var(--ease-out),
+    color 0.25s var(--ease-out),
+    transform 0.25s var(--ease-out),
+    box-shadow 0.35s var(--ease-out);
+  -webkit-tap-highlight-color: transparent;
+}
+
+.btn:hover {
+  --btn-border: rgba(168, 208, 222, 0.38);
+  --btn-bg: rgba(168, 208, 222, 0.06);
+}
+
+.btn:active {
+  transform: scale(0.97);
+}
+
+.btn:disabled {
+  cursor: default;
+  opacity: 0.7;
+  transform: none;
+}
+
+.btn--primary {
+  --btn-bg: var(--text);
+  --btn-fg: #06131b;
+  --btn-border: transparent;
+  box-shadow: 0 0 0 0 rgba(230, 238, 241, 0);
+}
+
+.btn--primary:hover {
+  --btn-bg: #fff;
+  --btn-border: transparent;
+  box-shadow: 0 10px 40px -10px rgba(200, 235, 240, 0.45);
+}
+
+.btn--quiet {
+  --btn-border: transparent;
+  padding-inline: 14px;
+  color: var(--text-2);
+}
+
+.btn--quiet:hover {
+  --btn-border: transparent;
+  color: var(--text);
+}
+
+.btn--sm {
+  min-height: 36px;
+  padding: 0 14px;
+  font-size: 14px;
+}
+
+.icon {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  fill: none;
+}
+
+/* Chips and inputs --------------------------------------------------------- */
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 36px;
+  padding: 0 14px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-2);
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s var(--ease-out);
+  -webkit-tap-highlight-color: transparent;
+}
+
+.chip:hover {
+  border-color: var(--line-strong);
+  color: var(--text);
+}
+
+.chip[aria-pressed='true'] {
+  border-color: rgba(143, 214, 207, 0.45);
+  background: var(--aqua-soft);
+  color: var(--text);
+}
+
+.field {
+  width: 100%;
+  min-height: 44px;
+  padding: 0 16px 0 42px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(8, 22, 32, 0.6);
+  color: var(--text);
+  font: inherit;
+  font-size: 15px;
+  transition: border-color 0.2s var(--ease-out), background-color 0.2s var(--ease-out);
+}
+
+.field::placeholder {
+  color: var(--text-3);
+}
+
+.field:hover {
+  border-color: var(--line-strong);
+}
+
+.field:focus {
+  outline: none;
+  border-color: rgba(143, 214, 207, 0.55);
+  background: rgba(8, 22, 32, 0.9);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

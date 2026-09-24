@@ -1,0 +1,12 @@
+.git
+.venv
+.claude
+frontend
+tests
+data
+xray
+xray.zip
+results.json
+top5.txt
+*.backup
+**/__pycache__

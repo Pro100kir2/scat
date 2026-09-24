@@ -3,6 +3,7 @@ import base64
 import binascii
 import hashlib
 import json
+import logging
 import os
 import platform
 import re
@@ -14,19 +15,26 @@ import tempfile
 import time
 import urllib.request
 import zipfile
+from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass, field
+from itertools import zip_longest
 from pathlib import Path
-from statistics import median
+from statistics import median, pstdev
 from typing import Optional, Dict, Any, List
 from urllib.parse import parse_qs, unquote, urlsplit
 
 import aiohttp
 import certifi
-from aiohttp_socks import ProxyConnector
 
 from app import config
+from app.services import probes
 
 DEBUG = os.getenv("DEBUG", "false").lower() in ("true", "1", "yes")
+logger = logging.getLogger("skat.scanner")
+
+
+class XrayStartError(RuntimeError):
+    """Xray exited during startup, usually because it rejected the generated config."""
 
 
 # ============================================================
@@ -64,6 +72,12 @@ class VLESSNode:
     stable: bool = False
     error: str = ""
     attempts: int = 0
+    label_country: str = ""  # from the flag emoji in the source label; only a hint
+    exit_ip: str = ""  # measured through the tunnel
+    exit_country: str = ""  # measured through the tunnel (Cloudflare trace "loc")
+    speed_mbps: Optional[float] = None
+    jitter_ms: Optional[float] = None
+    source_index: int = 0
 
 
 @dataclass
@@ -93,6 +107,15 @@ NETWORK_ALIASES = {
     "httpupgrade": "httpupgrade",
     "grpc": "grpc",
 }
+
+# Values Xray accepts; anything else makes Xray reject the whole batch config.
+XRAY_FINGERPRINTS = {
+    "chrome", "firefox", "safari", "ios", "android", "edge", "360", "qq",
+    "random", "randomized", "unsafe",
+}
+XRAY_FLOWS = {"", "xtls-rprx-vision", "xtls-rprx-vision-udp443"}
+XRAY_ALPN = {"h2", "http/1.1", "h3"}
+SHORT_ID_RE = re.compile(r"^(?:[0-9a-fA-F]{2}){0,8}$")
 
 VLESS_RE = re.compile(
     r"vless://[^\s\"'<>]*?(?=vless://|[\s\"'<>]|$)",
@@ -193,6 +216,24 @@ def extract_source_nodes(text: str) -> list[str]:
     return []
 
 
+_FLAG_RE = re.compile("([\U0001F1E6-\U0001F1FF]{2})")
+
+
+def country_from_name(name: str) -> Optional[str]:
+    """ISO 3166 code from the first flag emoji in a source label, e.g. 🇩🇪 → DE."""
+    match = _FLAG_RE.search(name or "")
+    if not match:
+        return None
+    return "".join(chr(ord(ch) - 0x1F1E6 + ord("A")) for ch in match.group(1))
+
+
+def _is_x25519_key(value: str) -> bool:
+    try:
+        return len(base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))) == 32
+    except (binascii.Error, ValueError):
+        return False
+
+
 def parse_vless(url: str) -> VLESSNode:
     url = clean_vless_candidate(url)
     parts = urlsplit(url)
@@ -221,21 +262,31 @@ def parse_vless(url: str) -> VLESSNode:
         security = "none"
 
     encryption = q(params, "encryption", default="none").strip() or "none"
-    flow = q(params, "flow").strip()
+    flow = q(params, "flow").strip().lower()
+    if flow not in XRAY_FLOWS:
+        raise ValueError(f"unsupported flow: {flow!r}")
     sni = q(params, "sni", "servername", "serverName").strip()
-    fingerprint_tls = q(params, "fp", "fingerprint").strip()
+    fingerprint_tls = q(params, "fp", "fingerprint").strip().lower()
+    if fingerprint_tls not in XRAY_FINGERPRINTS:
+        fingerprint_tls = ""
 
     alpn_raw = q(params, "alpn")
-    alpn = [x.strip() for x in alpn_raw.split(",") if x.strip()]
+    alpn = [x.strip().lower() for x in alpn_raw.split(",") if x.strip().lower() in XRAY_ALPN]
 
     allow_insecure = bool_value(q(params, "allowInsecure", "allowinsecure", default="false"))
     public_key = q(params, "pbk", "publicKey").strip()
     short_id = q(params, "sid", "shortId").strip()
+    if security == "reality":
+        if not SHORT_ID_RE.match(short_id):
+            raise ValueError("invalid REALITY shortId")
+        if public_key and not _is_x25519_key(public_key):
+            raise ValueError("invalid REALITY publicKey")
     spider_x = q(params, "spx", "spiderX")
     path = q(params, "path")
     host = q(params, "host")
     service_name = q(params, "serviceName")
     name = clean_name(parts.fragment)
+    label_country = country_from_name(name)
 
     identity = {
         "uuid": uuid,
@@ -281,6 +332,7 @@ def parse_vless(url: str) -> VLESSNode:
         host=host,
         service_name=service_name,
         params=params,
+        label_country=label_country or "",
     )
 
 
@@ -399,10 +451,31 @@ def build_xray_config(nodes: list[VLESSNode]) -> dict:
     outbounds = []
     rules = []
 
+    if DEBUG:
+        # Check for duplicate nodes by address:port
+        address_ports = {}
+        for node in nodes:
+            key = f"{node.address}:{node.port}"
+            if key in address_ports:
+                address_ports[key].append(node)
+            else:
+                address_ports[key] = [node]
+
+        duplicates = {k: v for k, v in address_ports.items() if len(v) > 1}
+        if duplicates:
+            print(f"[Duplicate Check] Found {len(duplicates)} duplicate address:port combinations:")
+            for addr_port, dup_nodes in list(duplicates.items())[:3]:  # Show first 3
+                print(f"[Duplicate Check] {addr_port}: {len(dup_nodes)} nodes")
+                for dn in dup_nodes[:2]:  # Show first 2
+                    print(f"[Duplicate Check]   UUID: {dn.uuid}, Network: {dn.network}, Security: {dn.security}, Port: {dn.local_port}")
+
     for index, node in enumerate(nodes):
         node.local_port = config.PORT_START + index
         inbound_tag = f"scanner-in-{index}"
         outbound_tag = f"scanner-out-{index}"
+
+        if DEBUG and index < 5:  # Show first 5 mappings
+            print(f"[Port Mapping] Node {index}: {node.address}:{node.port} → Port {node.local_port} → Tag {outbound_tag}")
 
         inbounds.append({
             "tag": inbound_tag,
@@ -414,7 +487,7 @@ def build_xray_config(nodes: list[VLESSNode]) -> dict:
 
         user = {
             "id": node.uuid,
-            "encryption": node.encryption or "none",
+            "encryption": "none",  # VLESS requires encryption="none"
             "level": 0,
         }
         if node.flow:
@@ -459,24 +532,35 @@ def build_xray_config(nodes: list[VLESSNode]) -> dict:
 # SCANNER SERVICE MANAGER
 # ============================================================
 
+@dataclass(frozen=True)
+class ScanQuery:
+    """What a scan looks for. Every query runs the same pipeline."""
+
+    country: Optional[str] = None  # ISO 3166 alpha-2 of the exit country
+
+    @property
+    def key(self) -> str:
+        return self.country or "all"
+
+
+class ScanFailed(RuntimeError):
+    """A scan could not produce results (no sources, no nodes, Xray missing...)."""
+
+
 class VLESSScannerManager:
+    """Runs one scan at a time and exposes live progress. Persistence lives in ScanService."""
+
     def __init__(self):
-        self.lock = asyncio.Lock()
-        self.is_scanning = False
+        self.lock = asyncio.Lock()  # one scan at a time: Xray ports and bandwidth are shared
+        self.query: Optional[ScanQuery] = None
         self.stage = "idle"
         self.progress = 0.0
         self.total_candidates = 0
         self.processed_candidates = 0
         self.working_candidates = 0
-        self.last_scan_time: Optional[str] = None
-        self.last_duration_seconds: float = 0.0
-        self.top_nodes: List[dict] = []
-        self.all_nodes: List[dict] = []
-        self.sources_status: List[dict] = []
-        self.error_message: str = ""
-
-        # Attempt initial load from saved file if present
-        self.load_results()
+        self.deep_checked = 0
+        self.started_at: Optional[float] = None
+        self.direct_ip: Optional[str] = None
 
     def ensure_xray_binary(self) -> str:
         candidates = [
@@ -492,7 +576,8 @@ class VLESSScannerManager:
                 return str(Path(candidate).resolve())
 
         # Attempt auto-download Xray for current system
-        print("[Scanner] Xray binary not found. Attempting auto-download...")
+        if DEBUG:
+            print("[Scanner] Xray binary not found. Attempting auto-download...")
         system = platform.system().lower()
         machine = platform.machine().lower()
 
@@ -525,27 +610,14 @@ class VLESSScannerManager:
                         if member != target_binary.name:
                             extracted.rename(target_binary)
                         target_binary.chmod(0o755)
-                        print(f"[Scanner] Xray downloaded successfully: {target_binary}")
+                        if DEBUG:
+                            print(f"[Scanner] Xray downloaded successfully: {target_binary}")
                         return str(target_binary.resolve())
         except Exception as exc:
-            print(f"[Scanner] Failed to download Xray core: {exc}")
+            if DEBUG:
+                print(f"[Scanner] Failed to download Xray core: {exc}")
 
         raise RuntimeError("Xray binary is missing and auto-download failed.")
-
-    def load_results(self):
-        try:
-            results_path = Path(config.RESULTS_FILE)
-            if results_path.exists():
-                data = json.loads(results_path.read_text(encoding="utf-8"))
-                self.top_nodes = data.get("top", [])
-                self.all_nodes = data.get("nodes", [])
-                self.sources_status = data.get("sources", [])
-                self.last_scan_time = data.get("timestamp")
-                self.working_candidates = data.get("working", len(self.top_nodes))
-                self.total_candidates = data.get("total_nodes", len(self.all_nodes))
-                print(f"[Scanner] Loaded {len(self.top_nodes)} top nodes from {config.RESULTS_FILE}")
-        except Exception as exc:
-            print(f"[Scanner] Could not load saved results: {exc}")
 
     def read_sources(self) -> List[str]:
         path = Path(config.CONFIG_FILE)
@@ -573,9 +645,9 @@ class VLESSScannerManager:
     ) -> tuple[str, SourceResult]:
         try:
             timeout = aiohttp.ClientTimeout(
-                total=config.TIMEOUT,
-                connect=min(config.TIMEOUT, 5),
-                sock_read=config.TIMEOUT,
+                total=config.SOURCE_TIMEOUT,
+                connect=min(config.SOURCE_TIMEOUT, 10),
+                sock_read=config.SOURCE_TIMEOUT,
             )
             async with session.get(
                 url,
@@ -605,7 +677,7 @@ class VLESSScannerManager:
             ttl_dns_cache=300,
             ssl=ssl_context,
         )
-        timeout = aiohttp.ClientTimeout(total=config.TIMEOUT)
+        timeout = aiohttp.ClientTimeout(total=config.SOURCE_TIMEOUT)
 
         async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
             sem = asyncio.Semaphore(config.SOURCE_CONCURRENCY)
@@ -625,353 +697,328 @@ class VLESSScannerManager:
                 bodies.append((url, body))
         return bodies, source_results
 
-    async def _test_once(self, node: VLESSNode) -> tuple[bool, Optional[float], Optional[int], str]:
-        proxy = f"socks5://127.0.0.1:{node.local_port}"
-        connector = None
-        start = time.perf_counter()
-
-        try:
-            # Disable SSL verification for REALITY nodes (they use fake certificates)
-            # or when allow_insecure is explicitly set
-            ssl_verify = node.security != "reality" and not node.allow_insecure
-            connector = ProxyConnector.from_url(proxy, rdns=True, ssl=ssl_verify)
-            timeout = aiohttp.ClientTimeout(
-                total=config.TIMEOUT,
-                connect=config.TIMEOUT,
-                sock_read=config.TIMEOUT,
-            )
-
-            async with aiohttp.ClientSession(
-                connector=connector,
-                timeout=timeout,
-                headers={"User-Agent": "Mozilla/5.0 VLESS-Scanner/2.0", "Accept": "*/*"},
-            ) as session:
-                async with session.get(config.TEST_URL, allow_redirects=True, max_redirects=5) as resp:
-                    await resp.content.read(4096)
-                    elapsed = (time.perf_counter() - start) * 1000
-                    if 200 <= resp.status < 400:
-                        return True, elapsed, resp.status, ""
-                    return False, elapsed, resp.status, f"HTTP {resp.status}"
-        except asyncio.TimeoutError:
-            return False, None, None, "timeout"
-        except Exception as exc:
-            error_msg = f"{type(exc).__name__}"
-            if hasattr(exc, 'args') and exc.args:
-                error_msg += f": {exc.args[0]}"
-            # Add more context for common errors
-            if "ClientOSError" in error_msg:
-                error_msg += f" (SOCKS5 proxy 127.0.0.1:{node.local_port} not responding - Xray may have failed)"
-            elif "ConnectorError" in error_msg:
-                error_msg += " (could not connect to proxy)"
-            elif "TimeoutError" in error_msg:
-                error_msg += " (connection timeout)"
-            if DEBUG:
-                print(f"[Node Test Error] {node.address}:{node.port} ({node.network}/{node.security}) - {error_msg}")
-            return False, None, None, error_msg
-        finally:
-            if connector:
-                try:
-                    await connector.close()
-                except Exception:
-                    pass
-
-    async def _check_node(self, node: VLESSNode, attempts: int) -> VLESSNode:
-        samples = []
-        last_error = ""
-
-        for attempt in range(attempts):
-            node.attempts += 1
-            ok, latency, status, error = await self._test_once(node)
-
-            if ok and latency is not None:
-                samples.append(latency)
-                node.status = status
-            else:
-                last_error = error
-
-            if attempt + 1 < attempts:
-                await asyncio.sleep(0.03)
-
-        node.latency_samples = samples
-        if samples:
-            node.success = True
-            node.latency_ms = median(samples)
-            node.stable = len(samples) == attempts
-            node.error = ""
-        else:
-            node.success = False
-            node.stable = False
-            node.latency_ms = None
-            node.error = last_error or "failed"
-
-        return node
-
-    async def _check_batch(self, nodes: list[VLESSNode], attempts: int) -> list[VLESSNode]:
-        if not nodes:
-            return []
-
-        queue: asyncio.Queue[VLESSNode] = asyncio.Queue()
-        for node in nodes:
-            queue.put_nowait(node)
-
-        lock = asyncio.Lock()
-
-        async def worker():
-            while True:
-                try:
-                    node = queue.get_nowait()
-                except asyncio.QueueEmpty:
-                    return
-
-                try:
-                    result = await self._check_node(node, attempts)
-                    async with lock:
-                        self.processed_candidates += 1
-                        if result.success:
-                            self.working_candidates += 1
-                        if self.total_candidates > 0:
-                            self.progress = round((self.processed_candidates / self.total_candidates) * 100, 1)
-                finally:
-                    queue.task_done()
-
-        worker_count = min(config.WORKERS, len(nodes))
-        await asyncio.gather(*(worker() for _ in range(worker_count)))
-        return nodes
-
-    async def _scan_batch_with_xray(
-        self, xray_binary: str, batch: list[VLESSNode], attempts: int
-    ) -> list[VLESSNode]:
-        compatible = validate_nodes_for_xray(batch)
-        if not compatible:
-            return []
-
-        # Run Xray process for batch
-        fd, path = tempfile.mkstemp(prefix="vless-scanner-", suffix=".json")
+    @staticmethod
+    async def _xray_accepts(xray_binary: str, nodes: list[VLESSNode]) -> tuple[bool, str]:
+        """Validate a config with `xray run -test` without opening any ports."""
+        fd, path = tempfile.mkstemp(prefix="vless-scanner-test-", suffix=".json")
         os.close(fd)
-        config_path = Path(path)
-
         try:
-            xray_config = build_xray_config(compatible)
-            config_path.write_text(json.dumps(xray_config, ensure_ascii=False, indent=2), encoding="utf-8")
-
-            if DEBUG:
-                print(f"[Xray Config] Testing {len(compatible)} nodes with ports {[n.local_port for n in compatible[:3]]}...")
-
+            Path(path).write_text(json.dumps(build_xray_config(nodes)), encoding="utf-8")
             process = await asyncio.create_subprocess_exec(
-                xray_binary,
-                "run",
-                "-config",
-                str(config_path),
+                xray_binary, "run", "-test", "-config", path,
                 stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+            output, _ = await process.communicate()
+            lines = [ln for ln in output.decode(errors="ignore").splitlines() if "Failed" in ln]
+            return process.returncode == 0, (lines[-1] if lines else "")
+        finally:
+            Path(path).unlink(missing_ok=True)
+
+    async def _drop_rejected_nodes(self, xray_binary: str, nodes: list[VLESSNode]) -> list[VLESSNode]:
+        """Bisect a batch that Xray refused to load and keep only the nodes it accepts."""
+        ok, reason = await self._xray_accepts(xray_binary, nodes)
+        if ok:
+            return nodes
+        if len(nodes) == 1:
+            node = nodes[0]
+            node.success = False
+            node.error = f"xray rejected config: {reason.split('>')[-1].strip()[:160]}"
+            logger.info("Xray rejected node %s:%s — %s", node.address, node.port, node.error)
+            return []
+        middle = len(nodes) // 2
+        left = await self._drop_rejected_nodes(xray_binary, nodes[:middle])
+        right = await self._drop_rejected_nodes(xray_binary, nodes[middle:])
+        return left + right
+
+    # --- Xray session ----------------------------------------------------------------
+
+    @asynccontextmanager
+    async def xray_session(self, xray_binary: str, nodes: list[VLESSNode]):
+        """Run one Xray process exposing a local SOCKS port per node; yield the usable nodes.
+
+        If Xray refuses the config, the offending nodes are isolated by bisection and
+        the rest still get tested.
+        """
+        compatible = validate_nodes_for_xray(nodes)
+        process = None
+        path = None
+        for attempt in range(2):
+            if not compatible:
+                break
+            fd, path = tempfile.mkstemp(prefix="vless-scanner-", suffix=".json")
+            os.close(fd)
+            Path(path).write_text(json.dumps(build_xray_config(compatible)), encoding="utf-8")
+            process = await asyncio.create_subprocess_exec(
+                xray_binary, "run", "-config", path,
+                stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.PIPE,
             )
+            await asyncio.sleep(1.0)
+            if process.returncode is None:
+                break
+            _, stderr = await process.communicate()
+            Path(path).unlink(missing_ok=True)
+            process = None
+            reason = stderr.decode(errors="ignore").strip().splitlines()[-1:] or ["no output"]
+            if attempt == 1:
+                raise XrayStartError(f"Xray failed to start: {reason[0]}")
+            logger.warning("Xray refused a batch of %d nodes, isolating bad nodes", len(compatible))
+            compatible = await self._drop_rejected_nodes(xray_binary, compatible)
 
-            await asyncio.sleep(1.0)  # Increased from 0.25 to 1.0 for slower systems
-
-            if process.returncode is not None:
-                stdout, stderr = await process.communicate()
-                stdout_text = stdout.decode(errors='ignore').strip()
-                stderr_text = stderr.decode(errors='ignore').strip()
-                error_msg = f"Xray process failed to start (exit code {process.returncode})"
-                if stderr_text:
-                    error_msg += f": {stderr_text}"
-                if stdout_text:
-                    error_msg += f"\nstdout: {stdout_text}"
-                if DEBUG:
-                    print(f"[Xray Error] {error_msg}")
-                raise RuntimeError(error_msg)
-
-            if DEBUG:
-                print(f"[Xray] Process started successfully for {len(compatible)} nodes")
-
-            # Check if Xray actually opened the SOCKS5 ports (only in DEBUG)
-            if DEBUG:
-                import socket
-                for node in compatible:
-                    try:
-                        test_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                        test_sock.settimeout(0.5)
-                        result = test_sock.connect_ex(('127.0.0.1', node.local_port))
-                        test_sock.close()
-                        if result != 0:
-                            print(f"[Xray Port Check] Port {node.local_port} not open - Xray may have failed for {node.address}")
-                    except Exception as e:
-                        print(f"[Xray Port Check] Error checking port {node.local_port}: {e}")
-
-            try:
-                await self._check_batch(compatible, attempts=attempts)
-            finally:
-                if process.returncode is None:
-                    try:
-                        process.send_signal(signal.SIGTERM)
-                        await asyncio.wait_for(process.wait(), timeout=1.5)
-                    except Exception:
-                        try:
-                            process.kill()
-                        except Exception:
-                            pass
-                if DEBUG:
-                    print(f"[Xray] Process terminated for batch")
-            return compatible
+        # Drain stderr so a chatty Xray never blocks on a full pipe.
+        drain = asyncio.create_task(process.stderr.read()) if process else None
+        try:
+            yield compatible if process else []
         finally:
-            config_path.unlink(missing_ok=True)
+            if process and process.returncode is None:
+                process.send_signal(signal.SIGTERM)
+                try:
+                    await asyncio.wait_for(process.wait(), timeout=2)
+                except asyncio.TimeoutError:
+                    process.kill()
+                    await process.wait()
+            if drain:
+                drain.cancel()
+            if path:
+                Path(path).unlink(missing_ok=True)
 
-    async def run_scan(self) -> dict:
-        if self.lock.locked():
-            return {"status": "error", "message": "Scan already in progress"}
+    @staticmethod
+    async def _for_each(nodes: list[VLESSNode], worker, concurrency: int, stop=lambda: False) -> None:
+        """Run `worker(node)` over nodes with bounded concurrency until `stop()` is true."""
+        queue = list(reversed(nodes))
 
+        async def run():
+            while queue and not stop():
+                await worker(queue.pop())
+
+        await asyncio.gather(*(run() for _ in range(max(1, min(concurrency, len(nodes))))))
+
+    # --- pipeline stage 1: find genuinely working candidates -----------------------
+
+    async def _qualify(self, node: VLESSNode, query: ScanQuery) -> bool:
+        port = node.local_port
+        result = await probes.trace(port, self.direct_ip)
+        if not result.ok:
+            node.error = result.error
+            return False
+        node.exit_ip, node.exit_country = result.exit_ip, result.country
+        if query.country and result.country != query.country:
+            node.error = f"exits in {result.country or 'unknown country'}"
+            return False
+        if not await probes.reach(port):
+            node.error = "second destination unreachable"
+            return False
+        if await probes.download(port, config.QUALIFY_DOWNLOAD_BYTES, config.QUALIFY_DOWNLOAD_TIMEOUT) is None:
+            node.error = "stalls during data transfer"
+            return False
+        node.latency_ms = result.latency_ms
+        node.success = True
+        node.error = ""
+        return True
+
+    async def _find_candidates(self, xray_binary: str, nodes: list[VLESSNode], query: ScanQuery) -> list[VLESSNode]:
+        found: list[VLESSNode] = []
+        enough = lambda: len(found) >= config.CANDIDATE_COUNT  # noqa: E731
+
+        async def check(node: VLESSNode):
+            if await self._qualify(node, query) and not enough():
+                found.append(node)
+                self.working_candidates = len(found)
+            self.processed_candidates += 1
+            self._update_progress()
+
+        for start in range(0, len(nodes), config.BATCH_SIZE):
+            if enough():
+                break
+            batch = nodes[start: start + config.BATCH_SIZE]
+            try:
+                async with self.xray_session(xray_binary, batch) as usable:
+                    self.processed_candidates += len(batch) - len(usable)
+                    await self._for_each(usable, check, config.WORKERS, stop=enough)
+            except XrayStartError:
+                logger.exception("Skipping a batch of %d nodes", len(batch))
+                self.processed_candidates += len(batch)
+        return found
+
+    # --- pipeline stage 2: deep checks on the candidates ---------------------------
+
+    async def _deep_check(self, xray_binary: str, candidates: list[VLESSNode]) -> None:
+        async with self.xray_session(xray_binary, candidates) as usable:
+
+            async def latency(node: VLESSNode):
+                samples = []
+                for _ in range(config.DEEP_ATTEMPTS):
+                    result = await probes.trace(node.local_port, self.direct_ip)
+                    if result.ok:
+                        samples.append(result.latency_ms)
+                    await asyncio.sleep(0.3)
+                node.attempts = config.DEEP_ATTEMPTS
+                node.latency_samples = samples
+                node.stable = len(samples) == config.DEEP_ATTEMPTS
+                node.latency_ms = median(samples) if samples else None
+                node.jitter_ms = pstdev(samples) if len(samples) > 1 else None
+
+            async def speed(node: VLESSNode):
+                node.speed_mbps = await probes.download(
+                    node.local_port, config.DEEP_DOWNLOAD_BYTES, config.DEEP_DOWNLOAD_TIMEOUT
+                )
+                self.deep_checked += 1
+                self._update_progress()
+
+            # Latency first, all at once (tiny requests); then throughput, a few at a
+            # time so the downloads don't compete for our own bandwidth.
+            await self._for_each(usable, latency, len(usable))
+            await self._for_each(usable, speed, config.DEEP_DOWNLOAD_CONCURRENCY)
+
+    # --- the pipeline ------------------------------------------------------------------
+
+    def _update_progress(self) -> None:
+        if self.stage == "testing":
+            scanned = self.processed_candidates / max(self.total_candidates, 1)
+            found = self.working_candidates / config.CANDIDATE_COUNT
+            self.progress = round(min(max(scanned, found), 1) * 85, 1)
+        elif self.stage == "rechecking":
+            self.progress = round(85 + self.deep_checked / max(self.working_candidates, 1) * 15, 1)
+
+    async def run_scan(self, query: ScanQuery = ScanQuery()) -> dict:
+        """all sources → first CANDIDATE_COUNT working → deep checks → TOP_COUNT best.
+
+        Scans are serialized: a second caller waits for the lock. Raises ScanFailed.
+        """
         async with self.lock:
-            start_time = time.time()
-            self.is_scanning = True
-            self.error_message = ""
+            self.query = query
             self.stage = "downloading"
             self.progress = 0.0
-            self.total_candidates = 0
-            self.processed_candidates = 0
-            self.working_candidates = 0
-
+            self.total_candidates = self.processed_candidates = 0
+            self.working_candidates = self.deep_checked = 0
+            self.started_at = time.time()
             try:
-                xray_binary = self.ensure_xray_binary()
-
-                sources = self.read_sources()
-                if not sources:
-                    raise RuntimeError("No sources found in config.txt")
-
-                # Separate direct VLESS links from remote URLs
-                direct_vless_links = [s for s in sources if s.startswith("vless://")]
-                remote_urls = [s for s in sources if not s.startswith("vless://")]
-
-                downloaded, source_results = await self._download_all_sources(remote_urls)
-
-                # Add direct VLESS links to source results
-                for link in direct_vless_links:
-                    source_results.append(SourceResult(link, True, "direct VLESS link"))
-
-                self.stage = "parsing"
-                all_urls = []
-                # Add direct VLESS links
-                all_urls.extend(direct_vless_links)
-                # Add URLs from downloaded sources
-                for source_url, body in downloaded:
-                    urls = extract_source_nodes(body)
-                    all_urls.extend(urls)
-
-                seen = set()
-                nodes: list[VLESSNode] = []
-                for url in all_urls:
-                    if len(nodes) >= config.MAX_NODES:
-                        break
-                    try:
-                        node = parse_vless(url)
-                        if node.fingerprint not in seen:
-                            seen.add(node.fingerprint)
-                            nodes.append(node)
-                    except Exception:
-                        continue
-
-                self.total_candidates = len(nodes)
-                if not nodes:
-                    raise RuntimeError("No valid VLESS nodes extracted from sources")
-
-                self.stage = "testing"
-                all_working: list[VLESSNode] = []
-
-                for batch_start in range(0, len(nodes), config.BATCH_SIZE):
-                    batch = nodes[batch_start : batch_start + config.BATCH_SIZE]
-                    try:
-                        working = await self._scan_batch_with_xray(
-                            xray_binary, batch, attempts=1 + config.RETRIES
-                        )
-                        # Mark nodes that failed validation (local_port == 0)
-                        for node in batch:
-                            if node.local_port == 0 and not node.error:
-                                node.error = "validation failed before Xray config"
-                                node.success = False
-                        all_working.extend([n for n in working if n.success])
-                    except Exception as exc:
-                        print(f"[Scanner] Batch error: {exc}")
-
-                # Rank and recheck candidates
-                self.stage = "rechecking"
-                ranked = sorted(
-                    [n for n in nodes if n.success and n.latency_ms is not None],
-                    key=lambda n: (not n.stable, n.latency_ms, -len(n.latency_samples)),
-                )
-
-                candidates = ranked[: config.RECHECK_COUNT]
-                if candidates:
-                    try:
-                        compatible = validate_nodes_for_xray(candidates)
-                        await self._scan_batch_with_xray(
-                            xray_binary, compatible, attempts=config.RECHECK_ATTEMPTS
-                        )
-                    except Exception as exc:
-                        print(f"[Scanner] Recheck error: {exc}")
-
-                final_ranked = sorted(
-                    [n for n in nodes if n.success and n.latency_ms is not None],
-                    key=lambda n: (not n.stable, n.latency_ms, -len(n.latency_samples)),
-                )
-
-                top = final_ranked[: config.TOP_COUNT]
-
-                # Save top5.txt
-                Path(config.TOP_FILE).write_text(
-                    "".join(node.original + "\n" for node in top),
-                    encoding="utf-8",
-                )
-
-                # Save results.json
-                timestamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-                results_data = {
-                    "timestamp": timestamp,
-                    "sources": [asdict(r) for r in source_results],
-                    "total_nodes": len(nodes),
-                    "working": len(final_ranked),
-                    "top": [asdict(node) for node in top],
-                    "nodes": [asdict(node) for node in nodes],
-                }
-                Path(config.RESULTS_FILE).write_text(
-                    json.dumps(results_data, indent=2, ensure_ascii=False),
-                    encoding="utf-8",
-                )
-
-                self.top_nodes = [asdict(node) for node in top]
-                self.all_nodes = [asdict(node) for node in nodes]
-                self.sources_status = [asdict(r) for r in source_results]
-                self.last_scan_time = timestamp
-                self.last_duration_seconds = round(time.time() - start_time, 2)
-                self.stage = "completed"
-                self.progress = 100.0
-
-                return {
-                    "status": "success",
-                    "total": len(nodes),
-                    "working": len(final_ranked),
-                    "top_count": len(top),
-                    "duration_seconds": self.last_duration_seconds,
-                }
-
-            except Exception as exc:
-                self.error_message = str(exc)
+                return await self._pipeline(query)
+            except ScanFailed:
                 self.stage = "failed"
-                print(f"[Scanner] Scan failed: {exc}")
-                return {"status": "error", "message": str(exc)}
+                raise
+            except Exception as exc:
+                self.stage = "failed"
+                logger.exception("Scan crashed")
+                raise ScanFailed(f"{type(exc).__name__}: {exc}") from exc
             finally:
-                self.is_scanning = False
+                self.query = None
+
+    async def _collect(self) -> tuple[list[VLESSNode], list[SourceResult]]:
+        """Download every source and return unique, Xray-compatible nodes."""
+        sources = self.read_sources()
+        if not sources:
+            raise ScanFailed("no sources configured")
+        direct = [s for s in sources if s.startswith("vless://")]
+        downloaded, source_results = await self._download_all_sources([s for s in sources if s not in direct])
+        source_results += [SourceResult(link, True, 1) for link in direct]
+
+        self.stage = "parsing"
+        per_source: list[list[str]] = [direct] + [extract_source_nodes(body) for _, body in downloaded]
+        counts = {url: len(urls) for (url, _), urls in zip(downloaded, per_source[1:])}
+        for result in source_results:
+            result.vless_count = counts.get(result.url, result.vless_count)
+
+        seen: set[str] = set()
+        nodes: list[VLESSNode] = []
+        for index, urls in enumerate(per_source):
+            for url in urls:
+                try:
+                    node = parse_vless(url)
+                except Exception:
+                    continue
+                if node.fingerprint not in seen:
+                    seen.add(node.fingerprint)
+                    node.source_index = index
+                    nodes.append(node)
+        return nodes[: config.MAX_NODES], source_results
+
+    async def _pipeline(self, query: ScanQuery) -> dict:
+        start_time = time.time()
+        try:
+            xray_binary = self.ensure_xray_binary()
+        except RuntimeError as exc:
+            raise ScanFailed(str(exc)) from exc
+
+        self.direct_ip = await probes.direct_exit_ip()
+        if not self.direct_ip:
+            raise ScanFailed("cannot determine the scanner's own IP (is the network up?)")
+
+        nodes, source_results = await self._collect()
+        if not nodes:
+            raise ScanFailed("no valid VLESS nodes extracted from sources")
+        ordered = order_candidates(nodes, query)
+        self.total_candidates = len(ordered)
+        logger.info("[%s] %d unique nodes from %d sources", query.key, len(nodes), len(source_results))
+
+        self.stage = "testing"
+        candidates = await self._find_candidates(xray_binary, ordered, query)
+        logger.info("[%s] %d candidates after checking %d nodes", query.key, len(candidates), self.processed_candidates)
+
+        self.stage = "rechecking"
+        if candidates:
+            await self._deep_check(xray_binary, candidates)
+        top = rank_nodes(candidates)[: config.TOP_COUNT]
+
+        duration = round(time.time() - start_time, 2)
+        self.stage = "completed"
+        self.progress = 100.0
+        logger.info("[%s] scan finished in %.1fs: best %d of %d candidates", query.key, duration, len(top), len(candidates))
+        return {
+            "country": query.country,
+            "duration_seconds": duration,
+            "total_nodes": len(nodes),
+            "tested": self.processed_candidates,
+            "working": len(candidates),
+            "sources": [asdict(r) for r in source_results],
+            "top": [asdict(node) for node in top],
+        }
 
     def get_status(self) -> dict:
         return {
-            "is_scanning": self.is_scanning,
+            "is_scanning": self.lock.locked(),
+            "query": self.query.key if self.query else None,
             "stage": self.stage,
             "progress": self.progress,
             "total_candidates": self.total_candidates,
             "processed_candidates": self.processed_candidates,
             "working_candidates": self.working_candidates,
-            "last_scan_time": self.last_scan_time,
-            "last_duration_seconds": self.last_duration_seconds,
-            "error_message": self.error_message,
+            "target_candidates": config.CANDIDATE_COUNT,
+            "elapsed_seconds": round(time.time() - self.started_at, 1)
+            if self.started_at and self.lock.locked() else None,
         }
+
+
+def order_candidates(nodes: list[VLESSNode], query: ScanQuery) -> list[VLESSNode]:
+    """Interleave sources so one big list can't crowd out the others; for a country
+    search, try nodes whose label claims that country first (the exit is still measured)."""
+    by_source: dict[int, list[VLESSNode]] = {}
+    for node in nodes:
+        by_source.setdefault(node.source_index, []).append(node)
+    interleaved = [n for group in zip_longest(*by_source.values()) for n in group if n is not None]
+    if query.country:
+        interleaved.sort(key=lambda n: n.label_country != query.country)  # stable sort
+    return interleaved
+
+
+def rank_score(node: VLESSNode) -> float:
+    """Expected cost in ms: latency penalised by failed checks, plus the time to fetch 1 MB."""
+    success_ratio = len(node.latency_samples) / max(node.attempts, 1)
+    return node.latency_ms * (1 + 2 * (1 - success_ratio)) + 8000 / node.speed_mbps
+
+
+def is_usable(node: VLESSNode) -> bool:
+    """Deep-check bar: most latency checks passed and a multi-MB download completed."""
+    return (
+        len(node.latency_samples) >= config.DEEP_MIN_SUCCESS
+        and node.latency_ms is not None
+        and bool(node.speed_mbps)
+    )
+
+
+def rank_nodes(candidates: list[VLESSNode]) -> list[VLESSNode]:
+    return sorted((n for n in candidates if is_usable(n)), key=rank_score)
 
 
 scanner_manager = VLESSScannerManager()

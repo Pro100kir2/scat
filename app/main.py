@@ -1,84 +1,83 @@
 import asyncio
-from contextlib import asynccontextmanager
-from pathlib import Path
-from fastapi import FastAPI, Request
-from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
+import logging
+import os
+from contextlib import asynccontextmanager, suppress
+
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app import config
 from app.api.routes import router as api_router
-from app.services.scanner import scanner_manager
+from app.services.scan_service import scan_service
+
+DEBUG = os.getenv("DEBUG", "false").lower() in ("true", "1", "yes")
+
+logging.basicConfig(
+    level=logging.DEBUG if DEBUG else logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
 
 
-periodic_task = None
+# Custom filter to deduplicate /api/scan/status logs
+class DeduplicateFilter(logging.Filter):
+    def __init__(self):
+        super().__init__()
+        self.last_log = None
 
-async def periodic_scan_loop():
-    """Background loop to periodically run scanner."""
-    while True:
-        try:
-            await asyncio.sleep(config.AUTO_SCAN_INTERVAL_SECONDS)
-            print("[Lifecycle] Starting scheduled periodic scan...")
-            await scanner_manager.run_scan()
-        except asyncio.CancelledError:
-            break
-        except Exception as exc:
-            print(f"[Lifecycle] Periodic scan error: {exc}")
+    def filter(self, record):
+        # Check if this is an /api/scan/status request
+        if "/api/scan/status" in record.getMessage():
+            current_log = record.getMessage()
+            if current_log == self.last_log:
+                return False  # Skip this duplicate
+            self.last_log = current_log
+        else:
+            self.last_log = None
+        return True
+
+
+# Apply the filter to uvicorn access logger
+uvicorn_logger = logging.getLogger("uvicorn.access")
+uvicorn_logger.addFilter(DeduplicateFilter())
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global periodic_task
-    print("[Lifecycle] VLESS Scanner Web App starting...")
-
-    # Load results
-    scanner_manager.load_results()
-
-    # Trigger scan if no existing results or auto-scan configured
-    if config.AUTO_SCAN_ON_STARTUP or not scanner_manager.top_nodes:
-        print("[Lifecycle] Triggering initial background scan on startup...")
-        asyncio.create_task(scanner_manager.run_scan())
-
-    if config.AUTO_SCAN_INTERVAL_SECONDS > 0:
-        periodic_task = asyncio.create_task(periodic_scan_loop())
+    background = None
+    if config.AUTO_REFRESH:
+        background = asyncio.create_task(scan_service.refresh_forever(scan_now=config.AUTO_SCAN_ON_STARTUP), name="skat-refresh")
+    elif config.AUTO_SCAN_ON_STARTUP:
+        scan_service.request_scan()
 
     yield
 
-    if periodic_task:
-        periodic_task.cancel()
-    print("[Lifecycle] VLESS Scanner Web App shut down.")
+    if background:
+        background.cancel()
+        with suppress(asyncio.CancelledError):
+            await background
 
 
 app = FastAPI(
-    title="VLESS Configs Finder",
-    description="Fast, stable and modern web service to find top working VLESS configs.",
-    version="2.0.0",
+    title="Скат API",
+    description="Finds working VLESS configurations and serves them from a 24-hour cache.",
+    version="3.0.0",
     lifespan=lifespan,
 )
 
-# CORS configuration
+# The browser app only reads public data, so no credentials are allowed cross-origin.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=config.ALLOWED_ORIGINS,
+    allow_origin_regex=config.ALLOWED_ORIGIN_REGEX,
+    allow_credentials=False,
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type"],
+    max_age=600,
 )
 
-BASE_DIR = Path(__file__).resolve().parent
-static_dir = BASE_DIR / "static"
-templates_dir = BASE_DIR / "templates"
-
-static_dir.mkdir(exist_ok=True)
-templates_dir.mkdir(exist_ok=True)
-
-app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
-templates = Jinja2Templates(directory=str(templates_dir))
-
-# Include API routes
 app.include_router(api_router, prefix="/api")
 
 
 @app.get("/", include_in_schema=False)
-async def home_page(request: Request):
-    return templates.TemplateResponse(request=request, name="index.html")
+async def root():
+    return {"name": "Скат API", "docs": "/docs", "results": "/api/results"}

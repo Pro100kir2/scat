@@ -40,3 +40,10 @@ xray.zip
 # OS
 .DS_Store
 Thumbs.db
+# Scan cache
+data/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+.vercel

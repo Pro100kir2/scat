@@ -10,9 +10,15 @@ import DonateLink from '@/components/ui/DonateLink.vue'
         <SkatMark :size="36" class="footer__mark" />
         <div>
           <p class="footer__name">Скат</p>
-          <p class="footer__tag">Бесплатно, без регистрации , с любовью ❤️️️️️</p>
+          <p class="footer__tag">Поиск бесплатных VPN-конфигураций. Без регистрации, с любовью ❤️</p>
         </div>
       </div>
+      <nav class="footer__nav" aria-label="Разделы сайта">
+        <a href="#catch">Улов</a>
+        <a href="#subscribe">Подписка</a>
+        <a href="#how">Как это работает</a>
+        <a href="#faq">Вопросы</a>
+      </nav>
       <div class="footer__actions">
         <DonateLink small />
         <a class="btn btn--sm btn--quiet" href="#top">Наверх</a>
@@ -29,6 +35,7 @@ import DonateLink from '@/components/ui/DonateLink.vue'
 
 .footer__inner {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 24px;
@@ -57,6 +64,27 @@ import DonateLink from '@/components/ui/DonateLink.vue'
   font-size: 14px;
 }
 
+.footer__nav {
+  order: 3;
+  display: flex;
+  flex-wrap: wrap;
+  flex-basis: 100%;
+  gap: 4px 24px;
+  padding-top: 20px;
+  border-top: 1px solid var(--line);
+  font-size: 14px;
+}
+
+.footer__nav a {
+  color: var(--text-3);
+  text-decoration: none;
+  transition: color 0.2s ease;
+}
+
+.footer__nav a:hover {
+  color: var(--text);
+}
+
 .footer__actions {
   display: flex;
   align-items: center;
@@ -67,6 +95,10 @@ import DonateLink from '@/components/ui/DonateLink.vue'
   .footer__inner {
     flex-direction: column;
     align-items: flex-start;
+  }
+
+  .footer__nav {
+    align-self: stretch;
   }
 }
 </style>

@@ -21,6 +21,7 @@ onBeforeUnmount(() => window.removeEventListener('scroll', onScroll))
           <a href="#catch">Улов</a>
           <a href="#subscribe" class="header__wide">Подписка</a>
           <a href="#how" class="header__wide">Как это работает</a>
+          <a href="#faq" class="header__wide header__xwide">Вопросы</a>
         </nav>
         <DonateLink small label="Пожертвовать" class="header__donate" />
       </div>
@@ -105,6 +106,12 @@ onBeforeUnmount(() => window.removeEventListener('scroll', onScroll))
 .header__nav a:hover {
   color: var(--text);
   background: rgba(168, 208, 222, 0.06);
+}
+
+@media (max-width: 900px) {
+  .header__xwide {
+    display: none;
+  }
 }
 
 @media (max-width: 640px) {

@@ -47,3 +47,4 @@ data/
 frontend/node_modules/
 frontend/dist/
 .vercel
+frontend/dist-server/

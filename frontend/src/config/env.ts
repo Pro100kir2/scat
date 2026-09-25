@@ -21,5 +21,6 @@ export const env = {
 
 /** Absolute URL for an API path, usable outside fetch (subscription links). */
 export function apiHref(path: string): string {
-  return `${env.apiUrl || window.location.origin}${path}`
+  const origin = env.apiUrl || (typeof window === 'undefined' ? '' : window.location.origin)
+  return `${origin}${path}`
 }

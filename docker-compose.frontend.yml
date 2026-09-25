@@ -16,6 +16,8 @@ services:
         VITE_API_URL: ${VITE_API_URL:?set VITE_API_URL in .env, e.g. https://api.scat-search.ru}
         VITE_SITE_URL: ${VITE_SITE_URL:-}
         VITE_DONATE_URL: ${VITE_DONATE_URL:-}
+        VITE_GOOGLE_SITE_VERIFICATION: ${VITE_GOOGLE_SITE_VERIFICATION:-}
+        VITE_YANDEX_VERIFICATION: ${VITE_YANDEX_VERIFICATION:-}
     image: scat-frontend:latest
     ports:
       - "127.0.0.1:8080:80"

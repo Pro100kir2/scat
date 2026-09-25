@@ -27,6 +27,11 @@ def test_root(client):
     assert client.get("/").json()["name"] == "Скат API"
 
 
+def test_api_host_is_not_indexed(client):
+    for path in ("/", "/api/health", "/docs"):
+        assert client.get(path).headers["X-Robots-Tag"] == "noindex, nofollow"
+
+
 def test_health(client):
     assert client.get("/api/health").json() == {"status": "ok"}
 

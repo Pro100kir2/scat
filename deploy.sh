@@ -2,11 +2,20 @@
 # Скат: provision and (re)deploy the whole stack on a fresh or existing Debian/Ubuntu server.
 #
 #   export GITHUB_TOKEN='<fine-grained PAT, Contents: read-only>'   # only if the repo is private
-#   sudo -E ./deploy.sh
+#   sudo -E ./deploy.sh            # decides by itself: SETUP or UPDATE
+#   sudo -E ./deploy.sh --setup    # force a complete SETUP (full validation and repair)
 #
-# Idempotent: each run checks what is already in place and changes only what is missing or
-# outdated. It never prints secrets, never writes the GitHub token to disk and never publishes
-# the backend port to the Internet.
+# Every run first checks whether the server really is in the state this script sets up
+# (is_initialized: Docker, containers, loopback-only ports, .env, the exact Caddy config,
+# caddy validate, HTTPS...). SETUP always wins:
+#   anything missing or different -> SETUP : install/repair everything, verify, then write the marker
+#   everything as expected        -> UPDATE: git fast-forward, rebuild images only if the commit (or
+#                                            .env) changed, docker compose up -d, verify
+# The marker (/var/lib/scat/.initialized) is written only after a SETUP whose checks all passed;
+# on its own it never makes a server count as initialized.
+#
+# Idempotent: each run changes only what is missing or outdated. It never prints secrets, never
+# writes the GitHub token to disk and never publishes the backend port to the Internet.
 #
 # Result:
 #   https://scat-search.ru      -> Caddy (host, systemd) -> 127.0.0.1:8080 -> frontend (Nginx)
@@ -44,8 +53,24 @@ BACKEND_LOCAL="127.0.0.1:8000"
 FRONTEND_LOCAL="127.0.0.1:8080"
 CADDY_SITES_DIR="/etc/caddy/sites"
 CADDY_SITE_FILE="${CADDY_SITES_DIR}/scat.caddy"
+# Keep the ACME e-mail of an earlier run when CADDY_EMAIL is not given again; otherwise the
+# expected Caddy config would change between runs and trigger a needless SETUP.
+if [[ -z "${CADDY_EMAIL:-}" && -r "$CADDY_SITE_FILE" ]]; then
+  CADDY_EMAIL="$(sed -nE 's/^[[:space:]]*tls[[:space:]]+([^[:space:]{}]+@[^[:space:]{}]+)[[:space:]]*$/\1/p' "$CADDY_SITE_FILE" | head -1 || true)"
+fi
 LOG_FILE="/var/log/scat-deploy.log"
-TOTAL_STEPS=11
+STATE_DIR="/var/lib/scat"
+STATE_FILE="${STATE_DIR}/.initialized"
+SETUP_STEPS=10
+UPDATE_STEPS=7
+TOTAL_STEPS=$SETUP_STEPS
+MODE=""            # SETUP or UPDATE, decided in main()
+FORCE_SETUP="${SCAT_FORCE_SETUP:-0}"
+REPO_CHANGED=0     # set by sync_repository
+# The script as it was when this run started (git may replace the file on disk later).
+SELF="$(readlink -f "${BASH_SOURCE[0]}")"
+SELF_SHA="$(sha256sum "$SELF" | cut -d' ' -f1)"
+ORIG_ARGS=("$@")
 
 # ------------------------------------------------------------------------------------
 # Output helpers
@@ -69,7 +94,12 @@ ok()   { printf '      %s✓%s %s\n' "$C_GRN" "$C_OFF" "$*"; }
 warn() { printf '      %s!%s %s\n' "$C_YEL" "$C_OFF" "$*"; WARNINGS+=("$*"); }
 mark() { STATUS["$1"]="$2"; }
 
+# A failed UPDATE must not leave the server marked as good: the next run then does SETUP.
+# (SETUP removes the marker when it starts, so a failed SETUP never has one.)
+failure_hook() { [[ "$MODE" == UPDATE ]] && rm -f "$STATE_FILE"; return 0; }
+
 die() {
+  failure_hook
   printf '\n%sFAILED: %s%s\n' "$C_RED" "$COMPONENT" "$C_OFF" >&2
   printf '%s\n' "$@" | sed 's/^/  /' >&2
   printf '  Full log: %s\n' "$LOG_FILE" >&2
@@ -78,6 +108,7 @@ die() {
 
 on_error() {
   local code=$? line=${BASH_LINENO[0]} cmd=${BASH_COMMAND}
+  failure_hook
   printf '\n%sFAILED: %s%s (exit %d at line %d)\n  command: %s\n' \
     "$C_RED" "$COMPONENT" "$C_OFF" "$code" "$line" "$cmd" >&2
   if [[ -s "$LOG_FILE" ]]; then
@@ -94,6 +125,7 @@ run() {
   printf '\n$ %s\n' "$*" >>"$LOG_FILE"
   if ! "$@" >>"$LOG_FILE" 2>&1; then
     local code=$?
+    failure_hook
     printf '\n%sFAILED: %s%s\n  command: %s (exit %d)\n  last log lines:\n' "$C_RED" "$COMPONENT" "$C_OFF" "$*" "$code" >&2
     tail -n 25 "$LOG_FILE" | sed 's/^/    /' >&2
     printf '  Full log: %s\n' "$LOG_FILE" >&2
@@ -127,7 +159,7 @@ apt_install() {
 # [1] Operating system
 # ------------------------------------------------------------------------------------
 detect_os() {
-  step "Detecting operating system..." "OS"
+  COMPONENT="OS"; printf '\n%s[preflight] Detecting operating system...%s\n' "$C_BLD" "$C_OFF"
   [[ ${EUID} -eq 0 ]] || die "Run as root: sudo -E $0   (-E keeps GITHUB_TOKEN if you exported it)"
   mkdir -p "$(dirname "$LOG_FILE")"; : >>"$LOG_FILE"; chmod 600 "$LOG_FILE"
   printf '\n===== deploy %s =====\n' "$(date -Is)" >>"$LOG_FILE"
@@ -386,38 +418,50 @@ strip_credentials_from_remote() {
 
 sync_repository() {
   step "Fetching the repository..." "Repository"
-  prepare_token
-  if [[ -d "$APP_DIR/.git" ]]; then
+  REPO_CHANGED=0
+  if [[ "${SCAT_REEXEC:-0}" == 1 && -d "$APP_DIR/.git" ]]; then
+    # Re-executed by the previous deploy.sh right after it fetched: no second fetch, no token.
     strip_credentials_from_remote
-    local current; current="$(git -C "$APP_DIR" remote get-url origin)"
-    if [[ "${current%.git}" != "${REPO_URL%.git}" ]]; then
-      warn "origin was ${current}; pointing it to ${REPO_URL}"
-      git -C "$APP_DIR" remote set-url origin "$REPO_URL"
-    fi
-    if [[ -n "$(git -C "$APP_DIR" status --porcelain --untracked-files=no)" ]]; then
-      die "$APP_DIR has local modifications to tracked files:" \
-          "$(git -C "$APP_DIR" status --short --untracked-files=no | head -20)" \
-          "Commit/stash or revert them (git -C $APP_DIR stash), then run deploy.sh again."
-    fi
-    run git_auth -C "$APP_DIR" fetch --prune origin "$BRANCH"
-    local before; before="$(git -C "$APP_DIR" rev-parse HEAD)"
-    if [[ "$(git -C "$APP_DIR" rev-parse --abbrev-ref HEAD)" != "$BRANCH" ]]; then
-      run git -C "$APP_DIR" checkout "$BRANCH"
-    fi
-    git -C "$APP_DIR" merge --ff-only "origin/$BRANCH" >>"$LOG_FILE" 2>&1 \
-      || die "Cannot fast-forward $APP_DIR to origin/$BRANCH (local commits?). Resolve it manually."
-    local after; after="$(git -C "$APP_DIR" rev-parse HEAD)"
-    [[ "$before" == "$after" ]] && ok "up to date at ${after:0:7}" || ok "updated ${before:0:7} -> ${after:0:7}"
+    local head; head="$(git -C "$APP_DIR" rev-parse HEAD)"
+    [[ "${SCAT_PREV_COMMIT:-}" != "$head" ]] && REPO_CHANGED=1
+    ok "continuing with the deploy.sh of ${head:0:7} (fetched by the previous script)"
   else
-    if [[ -e "$APP_DIR" && -n "$(ls -A "$APP_DIR" 2>/dev/null)" ]]; then
-      die "$APP_DIR exists, is not empty and is not a git checkout. Move it away or set SCAT_DIR."
+    prepare_token
+    if [[ -d "$APP_DIR/.git" ]]; then
+      strip_credentials_from_remote
+      local current; current="$(git -C "$APP_DIR" remote get-url origin)"
+      if [[ "${current%.git}" != "${REPO_URL%.git}" ]]; then
+        warn "origin was ${current}; pointing it to ${REPO_URL}"
+        git -C "$APP_DIR" remote set-url origin "$REPO_URL"
+      fi
+      if [[ -n "$(git -C "$APP_DIR" status --porcelain --untracked-files=no)" ]]; then
+        die "$APP_DIR has local modifications to tracked files:" \
+            "$(git -C "$APP_DIR" status --short --untracked-files=no | head -20)" \
+            "Commit/stash or revert them (git -C $APP_DIR stash), then run deploy.sh again."
+      fi
+      run git_auth -C "$APP_DIR" fetch --prune origin "$BRANCH"
+      local before; before="$(git -C "$APP_DIR" rev-parse HEAD)"
+      if [[ "$(git -C "$APP_DIR" rev-parse --abbrev-ref HEAD)" != "$BRANCH" ]]; then
+        run git -C "$APP_DIR" checkout "$BRANCH"
+      fi
+      git -C "$APP_DIR" merge --ff-only "origin/$BRANCH" >>"$LOG_FILE" 2>&1 \
+        || die "Cannot fast-forward $APP_DIR to origin/$BRANCH (local commits?). Resolve it manually."
+      local after; after="$(git -C "$APP_DIR" rev-parse HEAD)"
+      REPO_PREV_COMMIT="$before"
+      if [[ "$before" == "$after" ]]; then ok "up to date at ${after:0:7}"
+      else REPO_CHANGED=1; ok "updated ${before:0:7} -> ${after:0:7}"; fi
+    else
+      if [[ -e "$APP_DIR" && -n "$(ls -A "$APP_DIR" 2>/dev/null)" ]]; then
+        die "$APP_DIR exists, is not empty and is not a git checkout. Move it away or set SCAT_DIR."
+      fi
+      mkdir -p "$(dirname "$APP_DIR")"
+      run git_auth clone --branch "$BRANCH" "$REPO_URL" "$APP_DIR"
+      REPO_CHANGED=1; REPO_PREV_COMMIT=""
+      ok "cloned into $APP_DIR at $(git -C "$APP_DIR" rev-parse --short HEAD)"
     fi
-    mkdir -p "$(dirname "$APP_DIR")"
-    run git_auth clone --branch "$BRANCH" "$REPO_URL" "$APP_DIR"
-    ok "cloned into $APP_DIR at $(git -C "$APP_DIR" rev-parse --short HEAD)"
+    strip_credentials_from_remote
+    cleanup; ASKPASS_DIR=""
   fi
-  strip_credentials_from_remote
-  cleanup; ASKPASS_DIR=""
 
   local f missing=()
   for f in Dockerfile docker-compose.yml docker-compose.frontend.yml frontend/Dockerfile frontend/nginx.conf \
@@ -427,6 +471,22 @@ sync_repository() {
   ((${#missing[@]} == 0)) || die "The checkout lacks: ${missing[*]}. Push these files to ${BRANCH} first."
   git -C "$APP_DIR" check-ignore -q .env || die ".env is not ignored by $APP_DIR/.gitignore; refusing to create secrets there"
   mark Repository OK
+  reexec_if_script_changed
+}
+
+# The checkout may carry a newer deploy.sh than the one running (e.g. a copy in /root, or
+# this very file before the fast-forward). Its expectations are the ones that count, so hand
+# over to it: it re-checks the server state and runs SETUP if anything it expects differs.
+reexec_if_script_changed() {
+  local repo_script="$APP_DIR/deploy.sh"
+  [[ "${SCAT_REEXEC:-0}" == 1 || ! -f "$repo_script" ]] && return 0
+  [[ "$(sha256sum "$repo_script" | cut -d' ' -f1)" == "$SELF_SHA" ]] && return 0
+  info "the repository has a different deploy.sh; continuing with $repo_script"
+  local prev="${REPO_PREV_COMMIT:-}"
+  [[ "$REPO_CHANGED" == 1 ]] || prev="$(git -C "$APP_DIR" rev-parse HEAD)"
+  trap - ERR
+  exec env -u GITHUB_TOKEN -u SCAT_GIT_TOKEN SCAT_REEXEC=1 SCAT_PREV_COMMIT="$prev" SCAT_FORCE_SETUP="$FORCE_SETUP" \
+    bash "$repo_script" "${ORIG_ARGS[@]}"
 }
 
 # ------------------------------------------------------------------------------------
@@ -500,13 +560,19 @@ wait_healthy() {  # wait_healthy <service> <seconds>
   return 1
 }
 
-deploy_containers() {
+deploy_containers() {  # deploy_containers [rebuild|reuse]
+  local images="${1:-rebuild}"
   step "Building and starting containers..." "Backend container"
   migrate_legacy
   cd "$APP_DIR"
   run docker compose config --quiet
-  info "docker compose build (first run takes a few minutes)"
-  run docker compose build --pull
+  if [[ "$images" == rebuild ]]; then
+    # The containers run built images: new source only goes live after a rebuild.
+    info "docker compose build --pull (first run takes a few minutes)"
+    run docker compose build --pull
+  else
+    info "no new commit and .env unchanged: reusing the current images"
+  fi
   run docker compose up -d --remove-orphans
 
   COMPONENT="Backend container"
@@ -544,6 +610,12 @@ install_caddy() {
     rm -f /etc/apt/sources.list.d/caddy-stable.list; APT_UPDATED=0
     apt_install caddy
   fi
+}
+
+# The exact site file this script installs (rendered and `caddy fmt`-normalised). Both
+# configure_caddy and is_initialized use it, so "matches the expected config" means byte-equal.
+render_expected_caddy_site() {  # render_expected_caddy_site <file>
+  render_caddy_site >"$1" && caddy fmt --overwrite "$1"
 }
 
 render_caddy_site() {
@@ -596,8 +668,7 @@ configure_caddy() {
   local main=/etc/caddy/Caddyfile stamp; stamp="$(date +%Y%m%d%H%M%S)"
   install -d -m 0755 "$CADDY_SITES_DIR"
   local new_site; new_site="$(mktemp --suffix=.caddy)"
-  render_caddy_site >"$new_site"
-  run caddy fmt --overwrite "$new_site"
+  run render_expected_caddy_site "$new_site"
 
   # Backups for rollback if validation fails.
   local backup_main="" backup_site=""
@@ -642,6 +713,7 @@ configure_caddy() {
   [[ -n "$backup_main" ]] && cmp -s "$backup_main" "$main" && rm -f "$backup_main"
   [[ -n "$backup_site" ]] && cmp -s "$backup_site" "$CADDY_SITE_FILE" && rm -f "$backup_site"
 
+  run systemctl unmask caddy
   run systemctl enable caddy
   if systemctl is-active --quiet caddy; then run systemctl reload caddy; else run systemctl start caddy; fi
   systemctl is-active --quiet caddy || die "caddy.service is not running" "$(journalctl -u caddy -n 20 --no-pager 2>&1)"
@@ -833,6 +905,200 @@ health_checks() {
 }
 
 # ------------------------------------------------------------------------------------
+# Server state: is everything exactly as SETUP leaves it?
+# ------------------------------------------------------------------------------------
+marker_get() { sed -n "s/^$1=//p" "$STATE_FILE" 2>/dev/null | tail -1 || true; }
+env_sha() { sha256sum "$APP_DIR/.env" 2>/dev/null | cut -d' ' -f1 || true; }
+
+container_ready() {  # container_ready <service>: exists, running and healthy right now
+  local id
+  id="$(cd "$APP_DIR" && docker compose ps -q "$1" 2>/dev/null)" && [[ -n "$id" ]] \
+    && [[ "$(docker inspect -f '{{.State.Status}}/{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$id" 2>/dev/null)" == running/healthy ]]
+}
+
+st_marker() {
+  [[ -f "$STATE_FILE" ]] && [[ "$(marker_get status)" == ok ]]
+}
+st_marker_matches() {  # marker written by this very deploy.sh for these domains
+  [[ "$(marker_get deploy_sha256)" == "$SELF_SHA" && "$(marker_get domain)" == "$DOMAIN" \
+     && "$(marker_get api_domain)" == "$API_DOMAIN" && "$(marker_get app_dir)" == "$APP_DIR" ]]
+}
+st_repo() {
+  [[ -d "$APP_DIR/.git" ]] || return 1
+  local url; url="$(git -C "$APP_DIR" remote get-url origin 2>/dev/null)" || return 1
+  [[ "${url%.git}" == "${REPO_URL%.git}" ]] && ! [[ "$url" =~ ^https://[^/]*@ ]]
+}
+st_env() {
+  local f="$APP_DIR/.env" key origins api
+  [[ -f "$f" && "$(stat -c %a "$f")" == 600 ]] || return 1
+  for key in COMPOSE_PROJECT_NAME COMPOSE_FILE ALLOWED_ORIGINS VITE_API_URL TRUST_PROXY_HEADERS; do
+    [[ -n "$(env_get "$key")" ]] || return 1
+  done
+  origins="$(env_get ALLOWED_ORIGINS)"; api="$(env_get VITE_API_URL)"
+  [[ "$origins" != *"*"* && "$api" == https://* ]] && ! grep -qiE '^(GITHUB_TOKEN|GH_TOKEN)=' "$f"
+}
+st_docker() {
+  have docker && systemctl is-active --quiet docker && systemctl is-enabled --quiet docker && docker info >/dev/null 2>&1
+}
+st_compose() {
+  local v; v="$(docker compose version --short 2>/dev/null | sed 's/^v//')" || return 1
+  [[ -n "$v" ]] && dpkg --compare-versions "$v" ge 2.24.0
+}
+st_backend() {
+  container_ready backend && curl -fsS --max-time 5 "http://${BACKEND_LOCAL}/api/health" 2>/dev/null | grep -q '"ok"'
+}
+st_frontend() {
+  container_ready frontend && curl -fsS --max-time 5 "http://${FRONTEND_LOCAL}/" 2>/dev/null | grep -q 'id="app"'
+}
+st_loopback_only() {  # both app ports listen, and only on loopback
+  local listeners port
+  listeners="$(ss -Hltn 2>/dev/null | awk '{print $4}')" || return 1
+  for port in 8000 8080; do
+    grep -qE ":${port}\$" <<<"$listeners" || return 1
+  done
+  ! grep -E ':(8000|8080)$' <<<"$listeners" | grep -qvE '^(127\.0\.0\.1|\[::1\]):'
+}
+st_caddy_installed() { have caddy; }
+st_caddy_service() {
+  systemctl cat caddy.service >/dev/null 2>&1 && systemctl is-active --quiet caddy && systemctl is-enabled --quiet caddy
+}
+st_caddy_config() {  # installed site file == what this script would install, and it is loaded
+  local expected rc=1
+  [[ -f "$CADDY_SITE_FILE" ]] || return 1
+  grep -qxF "import ${CADDY_SITES_DIR}/*.caddy" /etc/caddy/Caddyfile 2>/dev/null || return 1
+  expected="$(mktemp --suffix=.caddy)"
+  if render_expected_caddy_site "$expected" >/dev/null 2>&1 && cmp -s "$expected" "$CADDY_SITE_FILE"; then rc=0; fi
+  rm -f "$expected"
+  return "$rc"
+}
+st_caddy_validate() { caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null 2>&1; }
+st_https() {
+  curl -fsS --max-time 15 "https://${DOMAIN}/" 2>/dev/null | grep -q 'id="app"' \
+    && curl -fsS --max-time 15 "https://${API_DOMAIN}/api/health" 2>/dev/null | grep -q '"ok"'
+}
+
+# True only when every critical part of the deployment is in place and working. The marker
+# is one of the checks, never a substitute for them. Prints what it found; changes nothing.
+is_initialized() {
+  COMPONENT="Server state"
+  printf '\n%s[state] Checking whether the server matches this deploy.sh...%s\n' "$C_BLD" "$C_OFF"
+  local failed=() check label
+  local -a checks=(
+    "st_marker|successful setup marker ${STATE_FILE}"
+    "st_marker_matches|marker written by this deploy.sh for ${DOMAIN}"
+    "st_repo|git checkout ${APP_DIR} with a clean origin"
+    "st_env|${APP_DIR}/.env present, mode 600, required keys"
+    "st_docker|Docker installed, running, enabled"
+    "st_compose|Docker Compose >= 2.24"
+    "st_backend|backend container healthy, ${BACKEND_LOCAL} answers"
+    "st_frontend|frontend container healthy, ${FRONTEND_LOCAL} answers"
+    "st_loopback_only|ports 8000/8080 bound to loopback only"
+    "st_caddy_installed|Caddy installed"
+    "st_caddy_service|caddy.service exists, active, enabled"
+    "st_caddy_config|${CADDY_SITE_FILE} identical to the expected config and imported"
+    "st_caddy_validate|caddy validate"
+  )
+  for check in "${checks[@]}"; do
+    label="${check#*|}"
+    if "${check%%|*}"; then ok "$label"; else printf '      %s✗%s %s\n' "$C_YEL" "$C_OFF" "$label"; failed+=("$label"); fi
+  done
+  if ((${#failed[@]} == 0)); then
+    if st_https; then ok "https://${DOMAIN} and https://${API_DOMAIN}/api/health"
+    else printf '      %s✗%s %s\n' "$C_YEL" "$C_OFF" "HTTPS endpoints"; failed+=("HTTPS endpoints"); fi
+  else
+    info "- HTTPS endpoints: not checked (earlier checks failed)"
+  fi
+  STATE_FAILURES=("${failed[@]}")
+  ((${#failed[@]} == 0))
+}
+
+# ------------------------------------------------------------------------------------
+# Setup marker
+# ------------------------------------------------------------------------------------
+invalidate_marker() { rm -f "$STATE_FILE"; }
+
+critical_checks_passed() {
+  local key
+  for key in Repository Environment "Backend container" "Frontend container" Caddy Firewall DNS HTTPS Frontend API; do
+    [[ "${STATUS[$key]:-}" == OK ]] || return 1
+  done
+}
+
+write_marker() {  # only after every critical check of this run passed
+  install -d -m 0700 "$STATE_DIR"
+  local tmp; tmp="$(mktemp "${STATE_DIR}/.initialized.XXXXXX")"
+  local initialized_at; initialized_at="$(marker_get initialized_at)"
+  [[ "$MODE" == SETUP || -z "$initialized_at" ]] && initialized_at="$(date -Is)"
+  cat >"$tmp" <<EOM
+# Written by deploy.sh after a successful ${MODE} and all health checks. Do not edit.
+status=ok
+initialized_at=${initialized_at}
+updated_at=$(date -Is)
+mode=${MODE}
+commit=$(git -C "$APP_DIR" rev-parse HEAD)
+env_sha256=$(env_sha)
+deploy_sha256=${SELF_SHA}
+caddy_site_sha256=$(sha256sum "$CADDY_SITE_FILE" | cut -d' ' -f1)
+domain=${DOMAIN}
+api_domain=${API_DOMAIN}
+app_dir=${APP_DIR}
+EOM
+  chmod 600 "$tmp"; mv -f "$tmp" "$STATE_FILE"
+}
+
+# ------------------------------------------------------------------------------------
+# The two modes
+# ------------------------------------------------------------------------------------
+full_setup() {
+  MODE=SETUP; TOTAL_STEPS=$SETUP_STEPS; STEP=0
+  # A setup that fails half-way must not leave a "successful" marker behind.
+  invalidate_marker
+  inspect_existing
+  install_base
+  install_docker
+  sync_repository
+  setup_env
+  deploy_containers rebuild
+  configure_caddy
+  configure_firewall
+  check_dns
+  health_checks
+  if critical_checks_passed; then
+    write_marker
+    ok "setup verified; marker written to ${STATE_FILE}"
+  else
+    warn "setup is not complete (HTTPS could not be verified yet); no marker written, the next run repeats SETUP"
+  fi
+}
+
+update_deployment() {
+  MODE=UPDATE; TOTAL_STEPS=$UPDATE_STEPS; STEP=0
+  sync_repository
+  setup_env   # adds nothing to a complete .env; re-validates it without printing values
+  local images=reuse
+  if [[ "$REPO_CHANGED" == 1 || "$(git -C "$APP_DIR" rev-parse HEAD)" != "$(marker_get commit)" \
+        || "$(env_sha)" != "$(marker_get env_sha256)" ]]; then
+    images=rebuild
+  fi
+  deploy_containers "$images"
+  verify_caddy
+  configure_firewall
+  check_dns
+  health_checks
+  critical_checks_passed || die "the update finished but not every check passed; see the summary above"
+  write_marker
+}
+
+verify_caddy() {  # UPDATE: Caddy was verified by is_initialized; confirm it is still serving
+  step "Checking Caddy..." "Caddy"
+  st_caddy_config || die "the Caddy config changed during the update; run: $0 --setup"
+  caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >>"$LOG_FILE" 2>&1 || die "caddy validate failed"
+  systemctl is-active --quiet caddy || die "caddy.service is not running" "$(journalctl -u caddy -n 20 --no-pager 2>&1)"
+  ok "$(caddy version | awk '{print "Caddy "$1}') active; config matches and validates"
+  mark Caddy OK
+}
+
+# ------------------------------------------------------------------------------------
 summary() {
   printf '\n%sSummary%s\n' "$C_BLD" "$C_OFF"
   local key value colour
@@ -844,23 +1110,39 @@ summary() {
   if ((${#WARNINGS[@]})); then
     printf '\n%sWarnings%s\n' "$C_YEL" "$C_OFF"; printf '  - %s\n' "${WARNINGS[@]}"
   fi
+  printf '\n  Mode: %s   Marker: %s\n' "$MODE" "$([[ -f "$STATE_FILE" ]] && echo "$STATE_FILE" || echo 'not written')"
   printf '\n  Site: https://%s   API: https://%s\n' "$DOMAIN" "$API_DOMAIN"
   printf '  Admin token: stored in %s/.env (ADMIN_TOKEN); not printed.\n' "$APP_DIR"
   printf '  Redeploy after pushing changes: sudo -E %s/deploy.sh\n' "$APP_DIR"
 }
 
+usage() {
+  sed -n '2,/^set -Eeuo/p' "$SELF" | sed '$d' | sed 's/^# \{0,1\}//'
+}
+
 main() {
+  while (($#)); do
+    case "$1" in
+      --setup) FORCE_SETUP=1 ;;
+      -h|--help) usage; exit 0 ;;
+      *) printf 'Unknown argument: %s (see --help)\n' "$1" >&2; exit 2 ;;
+    esac
+    shift
+  done
+
   detect_os
-  inspect_existing
-  install_base
-  install_docker
-  sync_repository
-  setup_env
-  deploy_containers
-  configure_caddy
-  configure_firewall
-  check_dns
-  health_checks
+  STATE_FAILURES=()
+  if [[ "$FORCE_SETUP" == 1 ]]; then
+    printf '\n%sMode: SETUP (forced with --setup)%s\n' "$C_BLD" "$C_OFF"
+    full_setup
+  elif is_initialized; then
+    printf '\n%sMode: UPDATE (server matches the expected state)%s\n' "$C_BLD" "$C_OFF"
+    update_deployment
+  else
+    printf '\n%sMode: SETUP (%d check(s) failed: %s)%s\n' "$C_BLD" "${#STATE_FAILURES[@]}" \
+      "$(IFS=';'; echo "${STATE_FAILURES[*]}")" "$C_OFF"
+    full_setup
+  fi
   summary
 }
 

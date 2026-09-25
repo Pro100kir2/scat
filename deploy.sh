@@ -864,8 +864,13 @@ health_checks() {
   [[ "$page" == *'id="app"'* ]] || die "https://${DOMAIN}/ does not contain the app shell"
   asset="$(grep -oE '/assets/index-[A-Za-z0-9_-]+\.js' <<<"$page" | head -1 || true)"
   [[ -n "$asset" ]] || die "no JavaScript bundle referenced by index.html"
-  if ! curl -fsS --max-time 15 "https://${DOMAIN}${asset}" | grep -qF "https://${API_DOMAIN}"; then
-    local other; other="$(curl -fsS --max-time 15 "https://${DOMAIN}${asset}" | grep -oE 'https://api\.[A-Za-z0-9.-]+' | sort -u | xargs || true)"
+  local bundle
+  bundle="$(curl -fsS --max-time 15 "https://${DOMAIN}${asset}")" \
+    || die "cannot load JavaScript bundle ${asset}"
+
+  if ! grep -qF "https://${API_DOMAIN}" <<<"$bundle"; then
+    local other
+    other="$(grep -oE 'https://api\.[A-Za-z0-9.-]+' <<<"$bundle" | sort -u | xargs || true)"
     [[ -z "$other" ]] || die "the deployed bundle calls ${other}, not https://${API_DOMAIN}. Fix VITE_API_URL in .env and rebuild."
     warn "could not find https://${API_DOMAIN} in ${asset}; check the browser network tab once"
   fi

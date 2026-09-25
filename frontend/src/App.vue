@@ -6,6 +6,7 @@ import HeroSection from '@/components/hero/HeroSection.vue'
 import ResultsSection from '@/components/results/ResultsSection.vue'
 import SubscriptionSection from '@/components/sections/SubscriptionSection.vue'
 import HowItWorks from '@/components/sections/HowItWorks.vue'
+import FaqSection from '@/components/sections/FaqSection.vue'
 import WelcomeDialog from '@/components/ui/WelcomeDialog.vue'
 import { useScan } from '@/composables/useScan'
 
@@ -21,6 +22,7 @@ onBeforeUnmount(scan.detach)
     <ResultsSection />
     <SubscriptionSection />
     <HowItWorks />
+    <FaqSection />
   </main>
   <SiteFooter />
   <WelcomeDialog />

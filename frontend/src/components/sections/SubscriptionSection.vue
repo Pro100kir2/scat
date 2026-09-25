@@ -1,8 +1,13 @@
 <script setup lang="ts">
+import { onMounted, ref } from 'vue'
 import CopyButton from '@/components/ui/CopyButton.vue'
-import { apiHref } from '@/config/env'
+import { apiHref, env } from '@/config/env'
 
-const url = apiHref('/api/vless/sub')
+const SUB_PATH = '/api/vless/sub'
+// Without a configured API origin the link is same-origin, which only the browser knows;
+// the prerendered page starts with the bare path and the full link replaces it after hydration.
+const url = ref(`${env.apiUrl}${SUB_PATH}`)
+onMounted(() => (url.value = apiHref(SUB_PATH)))
 
 const CLIENTS = [
   { name: 'v2rayNG', where: 'Android' },
@@ -19,7 +24,7 @@ const CLIENTS = [
         <p class="eyebrow">Подписка</p>
         <h2 id="sub-title" class="section-title">Одна ссылка — <em>всегда свежий</em> улов</h2>
         <p class="sub__lead">
-          Добавьте ссылку в клиент как подписку. Он будет сам забирать пять лучших жемчужин после каждого погружения.
+          Добавьте ссылку в VPN-клиент как подписку. Он будет сам забирать пять лучших жемчужин после каждого погружения.
         </p>
         <ul class="sub__clients">
           <li v-for="c in CLIENTS" :key="c.name">

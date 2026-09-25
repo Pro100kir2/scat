@@ -11,7 +11,8 @@ export function useCooldown(key: string, maxSeconds: number) {
     return Number.isFinite(stored) ? Math.min(stored, Date.now() + maxSeconds * 1000) : 0
   }
 
-  const until = ref(readUntil())
+  // Read on mount, not during setup: the prerendered page must match the first client render.
+  const until = ref(0)
   const now = ref(Date.now())
   const remaining = computed(() => Math.max(0, Math.ceil((until.value - now.value) / 1000)))
   let timer: ReturnType<typeof setTimeout> | undefined
@@ -29,7 +30,10 @@ export function useCooldown(key: string, maxSeconds: number) {
     tick()
   }
 
-  onMounted(tick)
+  onMounted(() => {
+    until.value = readUntil()
+    tick()
+  })
   onBeforeUnmount(() => clearTimeout(timer))
 
   return { remaining, start }

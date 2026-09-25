@@ -99,14 +99,14 @@ onBeforeUnmount(() => observer?.disconnect())
 
     <div class="container hero__inner">
       <div ref="content" class="hero__content">
-        <p class="eyebrow hero__eyebrow">VLESS · проверка через Xray</p>
+        <p class="eyebrow hero__eyebrow">Бесплатный VPN · VLESS · Xray</p>
         <h1 class="hero__title">
           Ищет жемчужины<br />
           <em>в глубинах интернета</em>
         </h1>
         <p class="hero__lead">
-          Скат просматривает тысячи открытых конфигураций, подключается к каждой по‑настоящему
-          и поднимает на поверхность только те, что работают быстро и стабильно.
+          Скат ищет бесплатные VPN: просматривает тысячи открытых VLESS-конфигураций, подключается
+          к каждой по‑настоящему и поднимает на поверхность только те, что работают быстро и стабильно.
         </p>
 
         <div class="hero__actions">

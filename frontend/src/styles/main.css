@@ -47,6 +47,8 @@
 
 html {
   scroll-behavior: smooth;
+  /* Section links land below the fixed header, not under it. */
+  scroll-padding-top: 76px;
   -webkit-text-size-adjust: 100%;
   background: var(--abyss);
 }

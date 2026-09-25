@@ -75,6 +75,16 @@ app.add_middleware(
     max_age=600,
 )
 
+
+
+# The API host (JSON, /docs) is not a page for people to land on from search: only the site is.
+@app.middleware("http")
+async def noindex(request, call_next):
+    response = await call_next(request)
+    response.headers["X-Robots-Tag"] = "noindex, nofollow"
+    return response
+
+
 app.include_router(api_router, prefix="/api")
 
 

@@ -869,9 +869,10 @@ health_checks() {
     [[ -z "$other" ]] || die "the deployed bundle calls ${other}, not https://${API_DOMAIN}. Fix VITE_API_URL in .env and rebuild."
     warn "could not find https://${API_DOMAIN} in ${asset}; check the browser network tab once"
   fi
+  # One page, no client routes: unknown paths must be real 404s (no soft-404 copies of the home page).
   code="$(http_code "https://${DOMAIN}/some/deep/link")"
-  [[ "$code" == 200 ]] || die "SPA fallback broken: /some/deep/link -> HTTP ${code}"
-  ok "app shell, bundle ${asset} (calls https://${API_DOMAIN}), SPA fallback"
+  [[ "$code" == 404 ]] || die "unknown paths must return 404: /some/deep/link -> HTTP ${code}"
+  ok "app shell, bundle ${asset} (calls https://${API_DOMAIN}), 404 for unknown paths"
   mark Frontend OK
 
   COMPONENT="API"

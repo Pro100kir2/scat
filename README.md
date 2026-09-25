@@ -158,6 +158,8 @@ docker compose up -d
 
 `vercel.json` не нужен: сайт одностраничный, без клиентского роутинга, поэтому rewrites не требуются.
 
+`npm run build` пререндерит страницу: после обычной сборки Vite собирает SSR‑версию приложения и записывает готовую разметку в `dist/index.html` (`scripts/prerender.mjs`), а в браузере Vue её гидратирует. Поисковики и превью ссылок видят весь текст без выполнения JavaScript. Неизвестные адреса отдают настоящий 404 (`404.html`), а не копию главной.
+
 ## Vercel Environment Variables
 
 **Settings → Environment Variables.** Всё, что начинается с `VITE_`, встраивается в JavaScript и видно любому посетителю — **никаких секретов сюда**.
@@ -165,8 +167,10 @@ docker compose up -d
 | Имя | Обязательно | Пример значения | Зачем |
 | --- | --- | --- | --- |
 | `VITE_API_URL` | **да** | `https://api.your-domain.com` | Публичный HTTPS‑адрес бэкенда, без `/` в конце |
-| `VITE_SITE_URL` | рекомендуется | `https://your-project.vercel.app` | Canonical и абсолютные ссылки Open Graph |
+| `VITE_SITE_URL` | рекомендуется | `https://your-project.vercel.app` | Canonical, абсолютные ссылки Open Graph и структурированных данных, `sitemap.xml` и строка `Sitemap:` в `robots.txt`. Без него sitemap не создаётся |
 | `VITE_DONATE_URL` | нет | ссылка на вашу страницу доната | Показывает кнопку «Пожертвовать» в шапке и «Поддержать Ската» в подвале. Пусто — кнопок нет. На Vercel задаётся в Environment Variables проекта |
+| `VITE_GOOGLE_SITE_VERIFICATION` | нет | `AbC…` | Подтверждение прав в Google Search Console: значение `content` из их `<meta>` |
+| `VITE_YANDEX_VERIFICATION` | нет | `0123…` | Подтверждение прав в Яндекс Вебмастере: значение `content` из их `<meta>` |
 
 После изменения переменных сделайте **Redeploy**: Vite подставляет их на этапе сборки.
 

@@ -156,6 +156,18 @@ retry), all its results are marked inconclusive, and an error event is logged.
 `PROBE_AUTO_APPROVE=true` skips verification entirely (closed deployments only). The admin's
 «Approve» is a manual override for exceptional cases.
 
+**Detected network.** Nobody has to know their ASN. Right after registration the backend looks
+up the address the probe registered from (`ASN_LOOKUP_URL`, RIPEstat prefix-overview by default:
+public, no key, https) and stores the ASN, the AS holder's name and the prefix
+(`probes.net_asn`, `net_as_name`, `net_prefix`). This runs in the background and never delays
+registration, heartbeats or verification. A failed lookup (service down, unannounced address) is
+stored in `net_error` and retried hourly by the maintenance loop; until then the provider the
+volunteer picked (and any ASN typed through the API) is used. The detected network is preferred
+everywhere: in the admin panel (with the typed value shown beside it and flagged when they
+differ), in public probe/provider views, and as the probe's identity in scoring (one point per
+network, [RANKING.md](RANKING.md)). Privacy: the lookup sends the probe's public IP to RIPE NCC;
+set `ASN_LOOKUP_URL=` (empty) to disable it.
+
 **Contact phone.** The website form has an optional «Телефон для связи». It is normalised to
 E.164 (`8 912 345-67-89` → `+79123456789`), stored on the enrollment and copied to the probe
 at registration, and visible only in the admin panel (where it is searchable and editable). It

@@ -174,7 +174,6 @@ export async function addProvider(form: ProviderForm, signal?: AbortSignal): Pro
   const body = {
     ...form,
     country: form.country.trim().toUpperCase(),
-    asn: form.asn.trim() || null,
     contact_phone: form.contact_phone.trim() || null,
   }
   const data = await request('/api/providers', { method: 'POST', body, signal })

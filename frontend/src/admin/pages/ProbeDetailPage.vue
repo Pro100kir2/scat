@@ -181,7 +181,23 @@ const OUTCOME_TONE: Record<string, 'ok' | 'warn' | 'bad'> = { SUCCESS: 'ok', FAI
       <section class="section box">
         <dl class="facts">
           <div><dt>Provider</dt><dd>{{ probe.provider }} ({{ probe.country }}) {{ probe.region ?? '' }}</dd></div>
-          <div><dt>ASN</dt><dd class="mono">{{ probe.asn ?? '—' }}</dd></div>
+          <div>
+            <dt>Network (detected)</dt>
+            <dd>
+              <template v-if="probe.asn_detected">
+                <span class="mono">AS{{ probe.asn_detected }}</span> {{ probe.as_name ?? '' }}
+                <span v-if="probe.net_prefix" class="muted mono"> {{ probe.net_prefix }}</span>
+              </template>
+              <span v-else class="muted">{{ probe.network_error ? `not detected: ${probe.network_error}` : 'detecting…' }}</span>
+            </dd>
+          </div>
+          <div>
+            <dt>ASN given in the form</dt>
+            <dd class="mono">
+              {{ probe.asn_claimed ? `AS${probe.asn_claimed}` : '—' }}
+              <Badge v-if="probe.asn_claimed && probe.asn_detected && probe.asn_claimed !== probe.asn_detected" tone="warn">differs</Badge>
+            </dd>
+          </div>
           <div><dt>Public IP</dt><dd class="mono">{{ probe.public_ip ?? '—' }}</dd></div>
           <div><dt>Enrolled from</dt><dd class="mono">{{ probe.enrollment.ip ?? '—' }}</dd></div>
           <div><dt>Profile</dt><dd class="mono">{{ probe.profile }} ({{ probe.platform }})</dd></div>

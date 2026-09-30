@@ -131,7 +131,7 @@ def probe_service(tmp_path, monkeypatch):
     DATA_DIR is never touched."""
     from app import config
     from app.api import rate_limit as rl
-    from app.probes import api as probes_api, service as probe_module, targets
+    from app.probes import api as probes_api, asn as asn_module, service as probe_module, targets
     from app.probes.releases import load_manifest
     from app.probes.store import Store
 
@@ -148,6 +148,10 @@ def probe_service(tmp_path, monkeypatch):
     async def fake_resolve(host, timeout=5.0):
         return API_IP  # the verification URL's host; no DNS in tests
 
+    async def no_asn_lookup(ip):  # no network in tests; test_probe_asn.py installs its own answers
+        raise asn_module.AsnLookupError("lookup disabled in tests")
+
+    monkeypatch.setattr(asn_module, "lookup", no_asn_lookup)
     monkeypatch.setattr(probe_module, "control_target", fake_control)
     monkeypatch.setattr(probe_module, "resolve_public", fake_resolve)
     monkeypatch.setattr(probe_module, "probe_service", service)

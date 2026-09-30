@@ -28,7 +28,14 @@ export interface ProbeRow {
   storage_free_kb: number | null
   storage_total_kb: number | null
   region: string | null
+  /** Detected from the registration connection when known, else what was typed. */
   asn: number | null
+  asn_detected: number | null
+  as_name: string | null
+  net_prefix: string | null
+  asn_claimed: number | null
+  network_checked_at: number | null
+  network_error: string | null
   public_ip: string | null
   contact_phone: string | null
   created_at: number

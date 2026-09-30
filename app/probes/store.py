@@ -257,7 +257,17 @@ CREATE TABLE IF NOT EXISTS meta (
 );
 """
 
-MIGRATIONS = {1: SCHEMA_V1, 2: MIGRATION_V2}
+# Version 3: the network a probe really registered from (detected, not typed).
+MIGRATION_V3 = """
+ALTER TABLE probes ADD COLUMN net_asn INTEGER;
+ALTER TABLE probes ADD COLUMN net_as_name TEXT;
+ALTER TABLE probes ADD COLUMN net_prefix TEXT;
+ALTER TABLE probes ADD COLUMN net_checked_at REAL;
+ALTER TABLE probes ADD COLUMN net_error TEXT;
+CREATE INDEX IF NOT EXISTS probes_net_asn ON probes(net_asn);
+"""
+
+MIGRATIONS = {1: SCHEMA_V1, 2: MIGRATION_V2, 3: MIGRATION_V3}
 SCHEMA_VERSION = max(MIGRATIONS)
 
 

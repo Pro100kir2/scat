@@ -3,10 +3,10 @@ import SkatMark from './SkatMark.vue'
 </script>
 
 <template>
-  <a class="logo" href="#top" aria-label="Скат — на главную">
+  <RouterLink class="logo" :to="{ path: '/', hash: '#top' }" aria-label="Скат — на главную">
     <SkatMark :size="26" class="logo__mark" />
     <span class="logo__word">Скат</span>
-  </a>
+  </RouterLink>
 </template>
 
 <style scoped>

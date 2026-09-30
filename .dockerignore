@@ -13,3 +13,5 @@ top5.txt
 # Secrets never go into the build context.
 .env
 .env.*
+# Built inside the image from probe/
+probe/dist

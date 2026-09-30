@@ -3,6 +3,7 @@ import { fileURLToPath, URL } from 'node:url'
 import { defineConfig, loadEnv, type HtmlTagDescriptor, type Plugin } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import { FAQ } from './src/content/faq.ts'
+import { PAGES } from './src/content/pages.ts'
 
 /**
  * Search-engine plumbing that depends on the production domain:
@@ -89,13 +90,17 @@ function siteMeta(env: Record<string, string>): Plugin {
       this.emitFile({ type: 'asset', fileName: 'robots.txt', source: `${robots.join('\n')}\n` })
       if (!base) return
       const lastmod = new Date().toISOString().slice(0, 10)
+      const entries = Object.values(PAGES)
+        .filter((page) => page.indexable)
+        .map((page) => `  <url>\n    <loc>${url(page.path)}</loc>\n    <lastmod>${lastmod}</lastmod>\n  </url>\n`)
+        .join('')
       this.emitFile({
         type: 'asset',
         fileName: 'sitemap.xml',
         source:
           '<?xml version="1.0" encoding="UTF-8"?>\n' +
           '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n' +
-          `  <url>\n    <loc>${url('/')}</loc>\n    <lastmod>${lastmod}</lastmod>\n  </url>\n` +
+          entries +
           '</urlset>\n',
       })
     },

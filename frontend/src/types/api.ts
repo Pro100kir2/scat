@@ -52,6 +52,8 @@ export interface PearlNode {
   stable: boolean
   checks_passed: number
   checks_total: number
+  /** Provider reachability of this config's endpoint; empty until providers have probes. */
+  reachability?: Reachability[]
 }
 
 export interface ResultsResponse extends ScanStatus {
@@ -65,4 +67,113 @@ export interface ScanRequestResponse extends ScanStatus {
 export interface RefreshResponse extends ScanRequestResponse {
   /** Seconds until anyone may force another refresh. */
   retry_after: number
+}
+
+// --- provider probes ----------------------------------------------------------------
+
+/** Per config and provider. Never conflated: each has its own look and wording. */
+export type ReachState = 'SUCCESS' | 'FAILED' | 'TIMEOUT' | 'CHECKING' | 'NO_PROBE' | 'OFFLINE' | 'NOT_TESTED'
+
+export interface Reachability {
+  provider_id: string
+  provider: string
+  state: ReachState
+  latency_ms: number | null
+  checked_at: number | null
+  probes: number
+}
+
+export interface ProviderSummary {
+  id: string
+  name: string
+  country: string
+  region: string | null
+  asn: number | null
+  regions: string[]
+  asns: number[]
+  probes_total: number
+  probes_online: number
+  status: 'online' | 'offline' | 'no_probe'
+  last_heartbeat: number | null
+}
+
+export interface ProbeSummary {
+  id: string
+  provider: string | null
+  status: 'pending' | 'approved' | 'disabled'
+  online: boolean
+  last_seen: number | null
+  region: string | null
+  asn: number | null
+  platform: string | null
+  version: string | null
+}
+
+export interface ProvidersResponse {
+  providers: ProviderSummary[]
+  probes: ProbeSummary[]
+  offline_after_seconds: number
+}
+
+export interface ProviderForm {
+  name: string
+  country: string
+  region: string
+  asn: string
+  info: string
+}
+
+export interface EnrollmentCreated {
+  enrollment_id: string
+  token: string
+  expires_at: number
+  provider: { id: string; name: string; country: string; region: string | null; asn: number | null }
+  install: { script_url: string; curl: string; wget: string; diagnose_only: string; releases_url: string }
+}
+
+export interface DiagnosticCheck {
+  name: string
+  ok: boolean
+  value: string
+  required: string
+}
+
+export interface DiagnosticIssue {
+  code: string
+  message: string
+}
+
+export interface DiagnosticsResult {
+  verdict: 'SUPPORTED' | 'UNSUPPORTED'
+  profile: string | null
+  profile_name: string | null
+  service: string | null
+  reasons: DiagnosticIssue[]
+  warnings: DiagnosticIssue[]
+  alternatives: DiagnosticIssue[]
+  checks: DiagnosticCheck[]
+  summary: Record<string, string | number | boolean | null>
+}
+
+export type EnrollmentState = 'waiting' | 'installing' | 'unsupported' | 'registered' | 'online' | 'offline'
+
+export interface EnrollmentStatus {
+  enrollment_id: string
+  state: EnrollmentState
+  expires_at: number
+  diagnostics: DiagnosticsResult | null
+  probe: ProbeSummary | null
+}
+
+export interface ProbeRelease {
+  profile: string
+  name: string
+  sha256: string
+  size: number
+  url: string
+}
+
+export interface ReleasesResponse {
+  version: string
+  releases: ProbeRelease[]
 }

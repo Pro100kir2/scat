@@ -3,6 +3,7 @@ import { computed, ref } from 'vue'
 import type { PearlNode } from '@/types/api'
 import CopyButton from '@/components/ui/CopyButton.vue'
 import AppIcon from '@/components/ui/AppIcon.vue'
+import NetworkAvailability from './NetworkAvailability.vue'
 import {
   countryName,
   latencyQuality,
@@ -111,6 +112,7 @@ const detailsId = computed(() => `pearl-details-${props.node.id}`)
             <dd>{{ node.label }}</dd>
           </div>
         </dl>
+        <NetworkAvailability v-if="node.reachability" :rows="node.reachability" />
         <div class="card__link">
           <code class="mono">{{ node.link }}</code>
         </div>

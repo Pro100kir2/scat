@@ -360,3 +360,21 @@ def test_scans_are_serialized(pipeline):
 
     first, second = asyncio.run(both())
     assert first["working"] == second["working"] == 3
+
+
+def test_ranked_candidates_keep_the_top_ranking():
+    """Provider probes check `ranked`; its prefix must be exactly the usable ranking."""
+    from app.services.scanner import rank_candidates, rank_nodes
+
+    def cand(name, latency, samples, speed):
+        node = parse_vless(REALITY_LINK.replace("example.com", f"{name}.example.com"))
+        node.latency_ms, node.latency_samples, node.attempts, node.speed_mbps = latency, [latency] * samples, 5, speed
+        return node
+
+    nodes = [cand("slow", 400, 5, 5), cand("broken", 90, 1, None), cand("fast", 100, 5, 30),
+             cand("unmeasured", None, 0, None), cand("mid", 200, 4, 10)]
+    ranked = rank_candidates(nodes)
+    usable = rank_nodes(nodes)
+    assert ranked[: len(usable)] == usable
+    assert [n.address.split(".")[0] for n in ranked] == ["fast", "mid", "slow", "broken", "unmeasured"]
+    assert len(ranked) == len(nodes)

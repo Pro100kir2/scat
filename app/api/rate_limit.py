@@ -11,9 +11,10 @@ MAX_TRACKED_CLIENTS = 10_000
 class RateLimiter:
     """Small in-memory sliding-window limiter, enough for one API process."""
 
-    def __init__(self, limit: int, window_seconds: float = 60.0):
+    def __init__(self, limit: int, window_seconds: float = 60.0, detail: str = "Too many scan requests"):
         self.limit = limit
         self.window = window_seconds
+        self.detail = detail
         self._hits: dict[str, deque[float]] = {}
 
     def check(self, key: str) -> None:
@@ -25,7 +26,7 @@ class RateLimiter:
             retry_after = int(self.window - (now - hits[0])) + 1
             raise HTTPException(
                 status_code=429,
-                detail="Too many scan requests",
+                detail=self.detail,
                 headers={"Retry-After": str(retry_after)},
             )
         hits.append(now)

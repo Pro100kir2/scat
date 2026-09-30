@@ -15,7 +15,7 @@ import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Awaitable, Callable, Literal, Optional
 
 from app import config
 from app.services.scanner import ScanFailed, ScanQuery, VLESSScannerManager, scanner_manager
@@ -31,6 +31,7 @@ LOCK_POLL_SECONDS = 2.0
 
 ALL = ScanQuery()
 RequestOutcome = Literal["cached", "started", "joined", "cooldown", "busy"]
+ScanListener = Callable[[ScanQuery, dict], Awaitable[None]]
 
 
 def _iso(ts: float) -> str:
@@ -130,6 +131,25 @@ class ScanService:
         self._slots: dict[str, _Slot] = {}
         self._refreshed_ts: Optional[float] = None
         self.stats = {"cache_hits": 0, "scans_started": 0, "requests_joined": 0, "rejected_busy": 0}
+        self._listeners: list[ScanListener] = []
+        self._listener_tasks: set[asyncio.Task] = set()
+
+    def add_listener(self, listener: ScanListener) -> None:
+        """Called with (query, cache entry) after every successful scan, outside the scan lock."""
+        self._listeners.append(listener)
+
+    def _notify(self, query: ScanQuery, entry: dict) -> None:
+        for listener in self._listeners:
+            task = asyncio.create_task(self._call_listener(listener, query, entry), name=f"skat-scan-listener-{query.key}")
+            self._listener_tasks.add(task)
+            task.add_done_callback(self._listener_tasks.discard)
+
+    @staticmethod
+    async def _call_listener(listener: ScanListener, query: ScanQuery, entry: dict) -> None:
+        try:
+            await listener(query, entry)
+        except Exception:
+            logger.exception("[%s] scan listener failed", query.key)
 
     def _slot(self, query: ScanQuery) -> _Slot:
         if query.key not in self._slots:
@@ -227,8 +247,9 @@ class ScanService:
                     return  # someone refreshed this cache while we waited
                 logger.info("[%s] starting scan (cache: %s)", query.key, self.cache_state(query))
                 result = await self.scanner.run_scan(query)
-                slot.cache.save(result)
+                entry = slot.cache.save(result)
                 slot.error = slot.error_ts = None
+                self._notify(query, entry)
             except ScanFailed as exc:
                 slot.error, slot.error_ts = str(exc), time.time()
                 logger.error("[%s] scan failed: %s", query.key, exc)

@@ -14,10 +14,13 @@ import DonateLink from '@/components/ui/DonateLink.vue'
         </div>
       </div>
       <nav class="footer__nav" aria-label="Разделы сайта">
-        <a href="#catch">Улов</a>
-        <a href="#subscribe">Подписка</a>
-        <a href="#how">Как это работает</a>
-        <a href="#faq">Вопросы</a>
+        <RouterLink :to="{ path: '/', hash: '#catch' }">Улов</RouterLink>
+        <RouterLink :to="{ path: '/', hash: '#subscribe' }">Подписка</RouterLink>
+        <RouterLink :to="{ path: '/', hash: '#how' }">Как это работает</RouterLink>
+        <RouterLink :to="{ path: '/', hash: '#faq' }">Вопросы</RouterLink>
+        <RouterLink to="/providers/">Провайдеры</RouterLink>
+        <RouterLink to="/providers/add/">Добавить провайдера</RouterLink>
+        <RouterLink to="/providers/install/">Установка зонда</RouterLink>
       </nav>
       <div class="footer__actions">
         <DonateLink small />

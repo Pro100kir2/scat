@@ -214,3 +214,45 @@ def test_refresh_joining_a_running_scan_does_not_start_the_cooldown(make_service
 
     asyncio.run(scenario())
     assert service.refresh_retry_after(600) == 0
+
+
+def test_listener_runs_after_each_successful_scan_only(make_service):
+    calls = []
+
+    async def listener(query, entry):
+        calls.append((query.key, entry["count"]))
+
+    async def failing(query, entry):
+        raise RuntimeError("listener bug")
+
+    async def scenario():
+        service = make_service()
+        service.add_listener(failing)  # must not break the scan or other listeners
+        service.add_listener(listener)
+        service.request_scan()
+        await service.wait()
+        await asyncio.gather(*service._listener_tasks)
+        assert service.request_scan() == "cached"  # a cache hit notifies nobody
+        await asyncio.sleep(0)
+        return service
+
+    service = run(scenario())
+    assert calls == [("all", 1)]
+    assert service.cache_state() == "fresh"
+
+
+def test_listener_not_called_when_the_scan_fails(make_service):
+    calls = []
+
+    async def listener(query, entry):
+        calls.append(query.key)
+
+    async def scenario():
+        service = make_service(FakeScanner(fail=True))
+        service.add_listener(listener)
+        service.request_scan()
+        await service.wait()
+        await asyncio.sleep(0)
+
+    run(scenario())
+    assert calls == []

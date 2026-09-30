@@ -516,6 +516,8 @@ setup_env() {
   env_has REFRESH_COOLDOWN_SECONDS || env_add REFRESH_COOLDOWN_SECONDS 600
   env_has CACHE_TTL_SECONDS    || env_add CACHE_TTL_SECONDS 86400
   env_has VITE_API_URL         || env_add VITE_API_URL "https://${API_DOMAIN}"
+  # Behind Caddy the API sees plain http; probe install commands need the public https origin.
+  env_has PUBLIC_API_URL       || env_add PUBLIC_API_URL "https://${API_DOMAIN}"
   env_has VITE_SITE_URL        || env_add VITE_SITE_URL "https://${DOMAIN}"
   if ! env_has VITE_DONATE_URL; then
     # Keep the donation link the project already documents (public, not a secret).

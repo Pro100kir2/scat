@@ -1,8 +1,11 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import SkatLogo from '@/components/brand/SkatLogo.vue'
 import DonateLink from '@/components/ui/DonateLink.vue'
 
+const route = useRoute()
+const inProviders = computed(() => route.path.startsWith('/providers'))
 const scrolled = ref(false)
 const onScroll = () => (scrolled.value = window.scrollY > 24)
 onMounted(() => {
@@ -18,10 +21,13 @@ onBeforeUnmount(() => window.removeEventListener('scroll', onScroll))
       <SkatLogo />
       <div class="header__end">
         <nav class="header__nav" aria-label="Разделы">
-          <a href="#catch">Улов</a>
-          <a href="#subscribe" class="header__wide">Подписка</a>
-          <a href="#how" class="header__wide">Как это работает</a>
-          <a href="#faq" class="header__wide header__xwide">Вопросы</a>
+          <RouterLink :to="{ path: '/', hash: '#catch' }">Улов</RouterLink>
+          <RouterLink to="/providers/" :class="{ 'is-current': inProviders }" :aria-current="inProviders ? 'page' : undefined">
+            Провайдеры
+          </RouterLink>
+          <RouterLink :to="{ path: '/', hash: '#subscribe' }" class="header__wide">Подписка</RouterLink>
+          <RouterLink :to="{ path: '/', hash: '#how' }" class="header__wide header__xxwide">Как это работает</RouterLink>
+          <RouterLink :to="{ path: '/', hash: '#faq' }" class="header__wide header__xwide">Вопросы</RouterLink>
         </nav>
         <DonateLink small label="Пожертвовать" class="header__donate" />
       </div>
@@ -71,8 +77,8 @@ onBeforeUnmount(() => window.removeEventListener('scroll', onScroll))
   --btn-bg: rgba(243, 233, 216, 0.07);
 }
 
-@media (max-width: 380px) {
-  /* Heart only on the narrowest phones; the label stays for screen readers. */
+@media (max-width: 640px) {
+  /* Heart only on phones; the label stays for screen readers. */
   .header__donate {
     width: 36px;
     padding: 0;
@@ -108,6 +114,16 @@ onBeforeUnmount(() => window.removeEventListener('scroll', onScroll))
   background: rgba(168, 208, 222, 0.06);
 }
 
+.header__nav a.is-current {
+  color: var(--pearl);
+}
+
+@media (max-width: 1080px) {
+  .header__xxwide {
+    display: none;
+  }
+}
+
 @media (max-width: 900px) {
   .header__xwide {
     display: none;
@@ -117,6 +133,10 @@ onBeforeUnmount(() => window.removeEventListener('scroll', onScroll))
 @media (max-width: 640px) {
   .header__wide {
     display: none;
+  }
+
+  .header__nav a {
+    padding: 8px 10px;
   }
 }
 </style>

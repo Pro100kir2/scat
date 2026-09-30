@@ -88,3 +88,72 @@ def api_service(make_service, monkeypatch):
     monkeypatch.setattr(routes, "scan_service", service)
     monkeypatch.setattr(rate_limit.scan_limiter, "_hits", {})
     return service
+
+
+# --- provider probes ------------------------------------------------------------------
+
+class FakeClock:
+    def __init__(self, start: float = 1_700_000_000.0):
+        self.now = start
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+PROBE_PROFILES_BUILT = ("linux-amd64", "linux-arm64", "linux-armv7", "linux-mipsle", "linux-mips")
+
+
+def make_dist(path, profiles=PROBE_PROFILES_BUILT, size: int = 4 * 1024 * 1024):
+    """A fake probe release directory: sparse binaries with real checksums."""
+    import hashlib
+
+    path.mkdir(parents=True, exist_ok=True)
+    (path / "VERSION").write_text("1.0.0\n")
+    sums = []
+    for profile in profiles:
+        binary = path / f"scat-probe-{profile}"
+        binary.write_bytes(b"\x7fELF" + profile.encode() + b"\0" * (size - 4 - len(profile)))
+        sums.append(f"{hashlib.sha256(binary.read_bytes()).hexdigest()}  scat-probe-{profile}")
+    (path / "SHA256SUMS").write_text("\n".join(sums) + "\n")
+    return path
+
+
+@pytest.fixture(autouse=True)
+def probe_service(tmp_path, monkeypatch):
+    """Every test gets its own probe database, clock and release directory; the real
+    DATA_DIR is never touched."""
+    from app import config
+    from app.api import rate_limit as rl
+    from app.probes import api as probes_api, service as probe_module, targets
+    from app.probes.releases import load_manifest
+    from app.probes.store import Store
+
+    dist = make_dist(tmp_path / "probe-dist")
+    monkeypatch.setattr(config, "PROBE_DIST_DIR", dist)
+    clock = FakeClock()
+    service = probe_module.ProbeService(Store(tmp_path / "probes.db"), lambda: load_manifest(dist), clock=clock)
+    service.clock_ = clock
+
+    async def fake_control(url):
+        return targets.Target("HTTP_GET", "142.250.74.35", 443, server_name="www.gstatic.com",
+                              path="/generate_204", tls=True)
+
+    monkeypatch.setattr(probe_module, "control_target", fake_control)
+    monkeypatch.setattr(probe_module, "probe_service", service)
+    for limiter in (probes_api.enroll_limiter, probes_api.public_limiter, probes_api.probe_limiter,
+                    probes_api.auth_fail_limiter, rl.scan_limiter):
+        monkeypatch.setattr(limiter, "_hits", {})
+    yield service
+    service.store.close()
+
+
+def public_node_at(i: int, ip: str, security: str = "reality", latency: float = 120.0) -> dict:
+    """A scanned config whose address is a public IP literal (no DNS in tests)."""
+    node = make_node(i, latency)
+    node.update(address=ip, link=node["link"].replace(f"n{i}.example.com", ip), security=security)
+    if security == "none":
+        node["sni"] = ""
+    return node

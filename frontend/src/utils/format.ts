@@ -35,6 +35,16 @@ export function formatUntil(iso: string, now = Date.now()): string | null {
   return `через ${Math.round(minutes / 60)} ч`
 }
 
+/** Unix seconds in the past: "только что", "3 мин назад", "5 ч назад", "12 марта". */
+export function formatAgo(unixSeconds: number | null, now = Date.now()): string {
+  if (!unixSeconds) return 'никогда'
+  const seconds = Math.max(0, Math.round(now / 1000 - unixSeconds))
+  if (seconds < 60) return 'только что'
+  if (seconds < 3600) return `${Math.floor(seconds / 60)} мин назад`
+  if (seconds < 86_400) return `${Math.floor(seconds / 3600)} ч назад`
+  return dayFormat.format(new Date(unixSeconds * 1000))
+}
+
 /** Seconds as a timer: 600 → "10:00", 65 → "1:05". */
 export function formatCountdown(seconds: number): string {
   const s = Math.max(0, Math.ceil(seconds))

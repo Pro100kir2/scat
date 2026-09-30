@@ -1,5 +1,15 @@
 import { env } from '@/config/env'
-import type { RefreshResponse, ResultsResponse, ScanRequestResponse, ScanStatus } from '@/types/api'
+import type {
+  EnrollmentCreated,
+  EnrollmentStatus,
+  ProviderForm,
+  ProvidersResponse,
+  RefreshResponse,
+  ReleasesResponse,
+  ResultsResponse,
+  ScanRequestResponse,
+  ScanStatus,
+} from '@/types/api'
 
 export type ApiErrorKind = 'network' | 'timeout' | 'rate_limit' | 'server' | 'malformed' | 'aborted'
 
@@ -7,18 +17,23 @@ export class ApiError extends Error {
   readonly kind: ApiErrorKind
   readonly status?: number
   readonly retryAfter?: number
+  /** FastAPI's `detail`: a reason string, or field errors for a 422. */
+  readonly detail?: unknown
 
-  constructor(kind: ApiErrorKind, message: string, opts: { status?: number; retryAfter?: number } = {}) {
+  constructor(kind: ApiErrorKind, message: string, opts: { status?: number; retryAfter?: number; detail?: unknown } = {}) {
     super(message)
     this.name = 'ApiError'
     this.kind = kind
     this.status = opts.status
     this.retryAfter = opts.retryAfter
+    this.detail = opts.detail
   }
 }
 
 interface RequestOptions {
   method?: 'GET' | 'POST'
+  /** JSON body, for POST. */
+  body?: unknown
   signal?: AbortSignal
   timeoutMs?: number
   /** Extra attempts for network errors and 5xx. Only used for idempotent requests. */
@@ -52,7 +67,10 @@ async function requestOnce(path: string, opts: RequestOptions): Promise<unknown>
       response = await fetch(`${env.apiUrl}${path}`, {
         method: opts.method ?? 'GET',
         signal: controller.signal,
-        headers: { Accept: 'application/json' },
+        headers: opts.body === undefined
+          ? { Accept: 'application/json' }
+          : { Accept: 'application/json', 'Content-Type': 'application/json' },
+        body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
       })
     } catch (err) {
       if (timedOut) throw new ApiError('timeout', `Timed out: ${path}`)
@@ -65,7 +83,13 @@ async function requestOnce(path: string, opts: RequestOptions): Promise<unknown>
       throw new ApiError('rate_limit', 'Too many requests', { status: 429, retryAfter })
     }
     if (!response.ok) {
-      throw new ApiError('server', `HTTP ${response.status} for ${path}`, { status: response.status })
+      let detail: unknown
+      try {
+        detail = ((await response.json()) as { detail?: unknown }).detail
+      } catch {
+        detail = undefined
+      }
+      throw new ApiError('server', `HTTP ${response.status} for ${path}`, { status: response.status, detail })
     }
     try {
       return await response.json()
@@ -133,6 +157,44 @@ export async function requestScan(signal?: AbortSignal): Promise<ScanRequestResp
   const data = await request('/api/scan', { method: 'POST', signal })
   assertStatus(data)
   return data as ScanRequestResponse
+}
+
+// --- provider probes -----------------------------------------------------------------
+
+export async function fetchProviders(signal?: AbortSignal): Promise<ProvidersResponse> {
+  const data = await request('/api/providers', { signal, retries: 2 })
+  if (!isObject(data) || !Array.isArray(data.providers) || !Array.isArray(data.probes)) {
+    throw new ApiError('malformed', 'Unexpected providers payload')
+  }
+  return data as unknown as ProvidersResponse
+}
+
+/** "Add your provider": returns a one-time token and the install commands. Never retried. */
+export async function addProvider(form: ProviderForm, signal?: AbortSignal): Promise<EnrollmentCreated> {
+  const body = { ...form, country: form.country.trim().toUpperCase(), asn: form.asn.trim() || null }
+  const data = await request('/api/providers', { method: 'POST', body, signal })
+  if (!isObject(data) || typeof data.token !== 'string' || typeof data.enrollment_id !== 'string' || !isObject(data.install)) {
+    throw new ApiError('malformed', 'Unexpected enrollment payload')
+  }
+  return data as unknown as EnrollmentCreated
+}
+
+/** Installation progress. The token goes in the body, never in a URL. */
+export async function fetchEnrollment(enrollmentId: string, token: string, signal?: AbortSignal): Promise<EnrollmentStatus> {
+  const data = await request('/api/providers/enrollment', {
+    method: 'POST',
+    body: { enrollment_id: enrollmentId, token },
+    signal,
+    timeoutMs: 8_000,
+  })
+  if (!isObject(data) || typeof data.state !== 'string') throw new ApiError('malformed', 'Unexpected enrollment status')
+  return data as unknown as EnrollmentStatus
+}
+
+export async function fetchReleases(signal?: AbortSignal): Promise<ReleasesResponse> {
+  const data = await request('/api/probes/releases', { signal, retries: 1 })
+  if (!isObject(data) || !Array.isArray(data.releases)) throw new ApiError('malformed', 'Unexpected releases payload')
+  return data as unknown as ReleasesResponse
 }
 
 /** Ignore today's cache and rescan. The server allows this once per cooldown for everyone. */

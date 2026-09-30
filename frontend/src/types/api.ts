@@ -52,6 +52,9 @@ export interface PearlNode {
   stable: boolean
   checks_passed: number
   checks_total: number
+  /** Providers whose probes confirmed this endpoint reachable, of those that checked it. */
+  probe_score?: number
+  probe_total?: number
   /** Provider reachability of this config's endpoint; empty until providers have probes. */
   reachability?: Reachability[]
 }
@@ -121,6 +124,8 @@ export interface ProviderForm {
   region: string
   asn: string
   info: string
+  /** Optional; only the admin sees it. */
+  contact_phone: string
 }
 
 export interface EnrollmentCreated {
@@ -155,7 +160,28 @@ export interface DiagnosticsResult {
   summary: Record<string, string | number | boolean | null>
 }
 
-export type EnrollmentState = 'waiting' | 'installing' | 'unsupported' | 'registered' | 'online' | 'offline'
+export type EnrollmentState =
+  | 'waiting'
+  | 'installing'
+  | 'unsupported'
+  | 'registered'
+  | 'verifying'
+  | 'verified'
+  | 'verification_failed'
+  | 'disabled'
+
+export type VerifyState = 'none' | 'running' | 'passed' | 'failed' | 'skipped'
+
+export interface VerificationStatus {
+  state: VerifyState
+  /** A code (see utils/probe.ts VERIFY_REASONS), only when failed. */
+  reason: string | null
+  finished_at: number | null
+  deadline: number | null
+  attempts: number
+  will_retry: boolean
+  online: boolean
+}
 
 export interface EnrollmentStatus {
   enrollment_id: string
@@ -163,6 +189,7 @@ export interface EnrollmentStatus {
   expires_at: number
   diagnostics: DiagnosticsResult | null
   probe: ProbeSummary | null
+  verification: VerificationStatus | null
 }
 
 export interface ProbeRelease {

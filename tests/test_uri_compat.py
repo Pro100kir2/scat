@@ -66,7 +66,7 @@ SHAPES = {
 ALL = {**FIVE, **SHAPES}
 
 
-def tested(node) -> dict:
+def _tested(node) -> dict:
     return refclient.canonical(build_outbound(node, "t"))
 
 
@@ -99,7 +99,7 @@ def explain(a: dict, b: dict) -> list[str]:
 @pytest.mark.parametrize("name", ALL)
 def test_user_link_decodes_to_the_tested_outbound_in_a_reference_client(name):
     node = parse_vless(ALL[name])
-    assert explain(tested(node), client(node.link)) == []
+    assert explain(_tested(node), client(node.link)) == []
 
 
 @pytest.mark.parametrize("name", ALL)
@@ -107,7 +107,7 @@ def test_user_link_survives_form_decoding_clients(name):
     """Clients using application/x-www-form-urlencoded decoding turn '+' into a space."""
     node = parse_vless(ALL[name])
     assert "+" not in urlsplit(node.link).query
-    assert explain(tested(node), client(node.link, plus_as_space=True)) == []
+    assert explain(_tested(node), client(node.link, plus_as_space=True)) == []
 
 
 # --- 2. the tested outbound is what the source link means ------------------------------
@@ -115,7 +115,7 @@ def test_user_link_survives_form_decoding_clients(name):
 @pytest.mark.parametrize("name", FIVE)
 def test_the_five_reported_nodes_were_tested_exactly_as_their_source_links_describe(name):
     node = parse_vless(FIVE[name])
-    assert explain(tested(node), client(FIVE[name])) == []
+    assert explain(_tested(node), client(FIVE[name])) == []
 
 
 @pytest.mark.parametrize(
@@ -129,7 +129,7 @@ def test_the_five_reported_nodes_were_tested_exactly_as_their_source_links_descr
 )
 @pytest.mark.xfail(strict=True, reason="known: parse_qs form-decodes '+', clean_vless_candidate strips trailing chars")
 def test_scanner_tests_what_the_source_link_says(link):
-    assert explain(tested(parse_vless(link)), client(link)) == []
+    assert explain(_tested(parse_vless(link)), client(link)) == []
 
 
 # --- 3. REALITY fields land in the right places ----------------------------------------

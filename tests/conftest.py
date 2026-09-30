@@ -86,6 +86,8 @@ def api_service(make_service, monkeypatch):
 
     service = make_service()
     monkeypatch.setattr(routes, "scan_service", service)
+    # The admin API and settings look the service up at call time; never the real scanner.
+    monkeypatch.setattr(scan_service_module, "scan_service", service)
     monkeypatch.setattr(rate_limit.scan_limiter, "_hits", {})
     return service
 
@@ -102,6 +104,8 @@ class FakeClock:
     def advance(self, seconds: float) -> None:
         self.now += seconds
 
+
+API_IP = "93.184.216.34"  # where the verification URL resolves in tests
 
 PROBE_PROFILES_BUILT = ("linux-amd64", "linux-arm64", "linux-armv7", "linux-mipsle", "linux-mips")
 
@@ -141,11 +145,23 @@ def probe_service(tmp_path, monkeypatch):
         return targets.Target("HTTP_GET", "142.250.74.35", 443, server_name="www.gstatic.com",
                               path="/generate_204", tls=True)
 
+    async def fake_resolve(host, timeout=5.0):
+        return API_IP  # the verification URL's host; no DNS in tests
+
     monkeypatch.setattr(probe_module, "control_target", fake_control)
+    monkeypatch.setattr(probe_module, "resolve_public", fake_resolve)
     monkeypatch.setattr(probe_module, "probe_service", service)
+    monkeypatch.setattr(config, "PUBLIC_API_URL", "https://api.scat-search.test")
+    monkeypatch.setattr(config, "PROBE_VERIFY_URL", "")
+    # Spot checks add a job to rounds; the tests that are about them turn them on.
+    monkeypatch.setattr(config, "PROBE_SPOT_CHECK_SECONDS", 0)
+    from app.admin import auth as admin_auth
+
     for limiter in (probes_api.enroll_limiter, probes_api.public_limiter, probes_api.probe_limiter,
-                    probes_api.auth_fail_limiter, rl.scan_limiter):
+                    probes_api.auth_fail_limiter, rl.scan_limiter, admin_auth.login_limiter, admin_auth.failure_limiter):
         monkeypatch.setattr(limiter, "_hits", {})
+    # Sources are imported from CONFIG_FILE on first use; tests never read the real config.txt.
+    monkeypatch.setattr(config, "CONFIG_FILE", str(tmp_path / "config.txt"))
     yield service
     service.store.close()
 

@@ -3,9 +3,9 @@ import { createMemoryHistory } from 'vue-router'
 import { renderToString } from 'vue/server-renderer'
 import App from './App.vue'
 import { createAppRouter } from './router'
-import { PAGES } from './content/pages'
+import { ADMIN_PAGE, PAGES } from './content/pages'
 
-export { PAGES }
+export { ADMIN_PAGE, PAGES }
 
 /** Build-time only: one page's initial state as HTML, before any API data arrives. */
 export async function render(url: string): Promise<string> {

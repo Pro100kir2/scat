@@ -42,3 +42,12 @@ export const PAGES = {
 } as const satisfies Record<string, PageMeta>
 
 export type PageName = keyof typeof PAGES
+
+/** The admin panel's shell: prerendered empty (no SSR content) and never indexed. Not in PAGES,
+ * so it is kept out of the sitemap and the per-page prerender. */
+export const ADMIN_PAGE: PageMeta = {
+  path: '/admin/',
+  title: 'Скат Admin',
+  description: 'Скат administration',
+  indexable: false,
+}

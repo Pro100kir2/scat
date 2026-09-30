@@ -88,10 +88,12 @@ def test_enrollment_status_follows_the_installation(probe_service):
     assert status()["state"] == "registered"
     probe = probe_service.authenticate(f"Bearer {creds['probe_id']}.{creds['secret']}")
     run(probe_service.heartbeat(probe, agent_version="1.0.0", public_ip="1.2.3.4"))
-    assert status()["state"] == "online"
+    # First contact starts automatic verification; the page says so instead of an error.
+    assert status()["state"] == "verifying"
+    assert status()["verification"]["state"] == "running" and status()["verification"]["online"] is True
     assert "public_ip" not in status()["probe"]  # the volunteer's IP never leaves the server
     probe_service.clock_.advance(config.PROBE_OFFLINE_AFTER_SECONDS + 1)
-    assert status()["state"] == "offline"
+    assert status()["verification"]["online"] is False
     with pytest.raises(EnrollmentError):
         probe_service.enrollment_status(e["enrollment_id"], "skenr_wrong")
 

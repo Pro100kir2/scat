@@ -171,7 +171,12 @@ export async function fetchProviders(signal?: AbortSignal): Promise<ProvidersRes
 
 /** "Add your provider": returns a one-time token and the install commands. Never retried. */
 export async function addProvider(form: ProviderForm, signal?: AbortSignal): Promise<EnrollmentCreated> {
-  const body = { ...form, country: form.country.trim().toUpperCase(), asn: form.asn.trim() || null }
+  const body = {
+    ...form,
+    country: form.country.trim().toUpperCase(),
+    asn: form.asn.trim() || null,
+    contact_phone: form.contact_phone.trim() || null,
+  }
   const data = await request('/api/providers', { method: 'POST', body, signal })
   if (!isObject(data) || typeof data.token !== 'string' || typeof data.enrollment_id !== 'string' || !isObject(data.install)) {
     throw new ApiError('malformed', 'Unexpected enrollment payload')

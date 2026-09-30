@@ -2,11 +2,12 @@
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
 import { fetchEnrollment } from '@/services/api'
 import type { EnrollmentState, EnrollmentStatus } from '@/types/api'
-import { checkLabel, issueText } from '@/utils/probe'
+import { checkLabel, issueText, verificationView } from '@/utils/probe'
 
 /**
  * Live progress of an installation, from the website's side: the installer reports to the
- * server, the page polls the server. Drawn as a descent line with four stations.
+ * server, the page polls the server. Drawn as a descent line with five stations; once the
+ * probe exists, a banner says in plain words where automatic verification stands.
  */
 const props = withDefaults(defineProps<{ enrollmentId: string; token: string; pollMs?: number }>(), { pollMs: 3000 })
 const emit = defineEmits<{ state: [state: EnrollmentState] }>()
@@ -33,7 +34,8 @@ async function poll() {
     // 404: the enrollment expired or was never ours; anything else is a blip.
     lost.value = (err as { status?: number }).status === 404
   }
-  if (!stopped && status.value?.state !== 'online' && !lost.value) timer = setTimeout(poll, nextDelay())
+  const settled = view.value?.final ?? false
+  if (!stopped && !settled && !lost.value) timer = setTimeout(poll, nextDelay())
 }
 
 onMounted(poll)
@@ -46,10 +48,13 @@ type Station = 'done' | 'active' | 'failed' | 'pending'
 const state = computed<EnrollmentState>(() => status.value?.state ?? 'waiting')
 const diag = computed(() => status.value?.diagnostics ?? null)
 
+const view = computed(() => (status.value ? verificationView(status.value) : null))
+
 const stations = computed<{ title: string; text: string; mark: Station }[]>(() => {
   const s = state.value
-  const order: EnrollmentState[] = ['waiting', 'installing', 'registered', 'online']
-  const reached = s === 'unsupported' ? 1 : s === 'offline' ? 3 : order.indexOf(s)
+  const v = status.value?.verification
+  const order: EnrollmentState[] = ['waiting', 'installing', 'registered', 'verifying', 'verified']
+  const reached = s === 'unsupported' ? 1 : s === 'verification_failed' || s === 'disabled' ? 3 : order.indexOf(s)
   const mark = (i: number): Station => (i < reached ? 'done' : i === reached ? 'active' : 'pending')
   return [
     {
@@ -70,11 +75,19 @@ const stations = computed<{ title: string; text: string; mark: Station }[]>(() =
       mark: s === 'unsupported' ? 'pending' : mark(2),
     },
     {
-      title: 'На связи',
-      text: s === 'online' ? 'Зонд прислал сигнал и получает задания'
-        : s === 'offline' ? 'Зонд зарегистрирован, но сейчас не на связи'
-          : 'Ждём первый сигнал зонда',
-      mark: s === 'online' ? 'done' : s === 'offline' ? 'failed' : s === 'unsupported' ? 'pending' : mark(3),
+      title: 'Автоматическая проверка',
+      text: s === 'verification_failed' ? 'Проверка не пройдена'
+        : s === 'disabled' ? 'Зонд отключён'
+          : reached > 3 ? 'Зонд выполнил проверочное задание'
+            : s === 'verifying' ? (v?.online ? 'Зонд на связи, выполняет проверочное задание' : 'Ждём, когда зонд выйдет на связь')
+              : 'Зонд получит проверочное задание',
+      mark: s === 'verification_failed' || s === 'disabled' ? 'failed' : s === 'unsupported' ? 'pending' : mark(3),
+    },
+    {
+      title: 'В работе',
+      text: s === 'verified' ? (v?.online ? 'Участвует в проверке VLESS-конфигураций' : 'Проверен, но сейчас не на связи')
+        : 'Начнёт получать задания сразу после проверки',
+      mark: s === 'verified' ? (v?.online ? 'done' : 'failed') : 'pending',
     },
   ]
 })
@@ -109,16 +122,35 @@ const summary = computed(() => {
       Эта заявка истекла или не найдена. Создайте новую: токен действует 24 часа и подходит для одной установки.
     </p>
 
-    <div v-if="state === 'online'" class="status__done">
-      <p class="status__done-title">Зонд на связи 🎉</p>
-      <p>
-        Спасибо! Теперь Скат видит сеть вашего провайдера.
-        <template v-if="status?.probe?.status === 'pending'">
-          Результаты зонда начнут учитываться после быстрой проверки: так мы защищаемся от поддельных зондов.
-        </template>
-      </p>
-      <RouterLink class="btn btn--sm" to="/providers/">К списку провайдеров</RouterLink>
+    <div v-if="view" class="banner" :class="`banner--${view.tone}`" role="status">
+      <p class="banner__title"><span aria-hidden="true">{{ view.icon }}</span> {{ view.title }}</p>
+      <p v-for="line in view.lines" :key="line">{{ line }}</p>
+      <template v-if="view.reason">
+        <p class="banner__label">Причина</p>
+        <p>{{ view.reason }}</p>
+      </template>
+      <template v-if="view.todo?.length">
+        <p class="banner__label">Что делать</p>
+        <ul>
+          <li v-for="item in view.todo" :key="item">{{ item }}</li>
+        </ul>
+      </template>
+      <RouterLink v-if="view.tone === 'ok'" class="btn btn--sm" to="/providers/">К списку провайдеров</RouterLink>
     </div>
+
+    <details v-if="status?.probe" class="checks">
+      <summary>Технические подробности</summary>
+      <dl class="checks__summary">
+        <div><dt>ID зонда</dt><dd class="mono">{{ status.probe.id }}</dd></div>
+        <div><dt>Состояние</dt><dd class="mono">{{ state }}</dd></div>
+        <div><dt>Статус</dt><dd class="mono">{{ status.probe.status }}</dd></div>
+        <div><dt>Проверка</dt><dd class="mono">{{ status.verification?.state ?? '—' }}</dd></div>
+        <div v-if="status.verification?.reason"><dt>Код причины</dt><dd class="mono">{{ status.verification.reason }}</dd></div>
+        <div><dt>Попыток проверки</dt><dd class="mono">{{ status.verification?.attempts ?? 0 }}</dd></div>
+        <div><dt>На связи</dt><dd>{{ status.verification?.online ? 'да' : 'нет' }}</dd></div>
+        <div v-if="status.probe.version"><dt>Версия зонда</dt><dd class="mono">{{ status.probe.version }}</dd></div>
+      </dl>
+    </details>
 
     <div v-if="state === 'unsupported' && diag" class="status__fail">
       <p class="status__fail-title">Почему не подходит</p>
@@ -241,8 +273,8 @@ const summary = computed(() => {
 }
 
 .status__lost,
-.status__done,
-.status__fail {
+.status__fail,
+.banner {
   margin-top: 24px;
   padding: 18px 20px;
   border-radius: var(--radius-sm);
@@ -253,18 +285,48 @@ const summary = computed(() => {
   color: var(--coral);
 }
 
-.status__done {
+.banner {
   display: grid;
   justify-items: start;
-  gap: 10px;
+  gap: 8px;
+  color: var(--text-2);
+}
+
+.banner__title {
+  font-family: var(--font-display);
+  font-size: 26px;
+  line-height: 1.15;
+  color: var(--text);
+}
+
+.banner__label {
+  margin-top: 6px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.banner ul {
+  margin: 0;
+  padding-left: 20px;
+}
+
+.banner--wait {
+  border: 1px solid rgba(223, 193, 137, 0.35);
+  background: rgba(223, 193, 137, 0.08);
+}
+
+.banner--ok {
   border: 1px solid rgba(143, 214, 207, 0.35);
   background: var(--aqua-soft);
 }
 
-.status__done-title {
-  font-family: var(--font-display);
-  font-size: 26px;
+.banner--ok .banner__title {
   color: var(--aqua);
+}
+
+.banner--fail {
+  border: 1px solid rgba(236, 154, 134, 0.3);
+  background: var(--coral-soft);
 }
 
 .status__fail {

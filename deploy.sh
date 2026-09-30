@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
 # Скат: provision and (re)deploy the whole stack on a fresh or existing Debian/Ubuntu server.
 #
-#   export GITHUB_TOKEN='<fine-grained PAT, Contents: read-only>'   # only if the repo is private
-#   sudo -E ./deploy.sh            # decides by itself: SETUP or UPDATE
-#   sudo -E ./deploy.sh --setup    # force a complete SETUP (full validation and repair)
+#   sudo ./deploy.sh            # decides by itself: SETUP or UPDATE
+#   sudo ./deploy.sh --setup    # force a complete SETUP (full validation and repair)
+#
+# Git uses SSH (git@github.com:Pro100Kir2/scat.git) as root. The first run creates a
+# read-only deploy key (/root/.ssh/scat_deploy_ed25519), prints its public half and stops
+# until you add it at https://github.com/Pro100Kir2/scat/settings/keys; an existing root
+# SSH key or a forwarded agent (sudo -E) works too. GitHub's host keys are taken from
+# https://api.github.com/meta (TLS-verified), never trusted on first use.
 #
 # Every run first checks whether the server really is in the state this script sets up
 # (is_initialized: Docker, containers, loopback-only ports, .env, the exact Caddy config,
@@ -12,10 +17,14 @@
 #   everything as expected        -> UPDATE: git fast-forward, rebuild images only if the commit (or
 #                                            .env) changed, docker compose up -d, verify
 # The marker (/var/lib/scat/.initialized) is written only after a SETUP whose checks all passed;
-# on its own it never makes a server count as initialized.
+# on its own it never makes a server count as initialized. It records STATE_SCHEMA, not the
+# script's hash: editing deploy.sh does not force a SETUP unless the state it expects changed.
 #
-# Idempotent: each run changes only what is missing or outdated. It never prints secrets, never
-# writes the GitHub token to disk and never publishes the backend port to the Internet.
+# Everything shown on the terminal, including failures, also goes to /var/log/scat-deploy.log.
+# Exit codes: 0 done, 1 failed, 3 SETUP incomplete (DNS/HTTPS not ready yet; re-run later).
+#
+# Idempotent: each run changes only what is missing or outdated. It never prints secrets and
+# never publishes the backend port to the Internet.
 #
 # Result:
 #   https://scat-search.ru      -> Caddy (host, systemd) -> 127.0.0.1:8080 -> frontend (Nginx)
@@ -23,8 +32,8 @@
 #   https://api.scat-search.ru  -> Caddy (host, systemd) -> 127.0.0.1:8000 -> backend (FastAPI)
 #
 # Settings (environment variables, all optional):
-#   GITHUB_TOKEN            PAT used only for git clone/fetch; asked for when needed and a TTY exists
-#   SCAT_REPO_URL           default https://github.com/Pro100kir2/scat.git
+#   SCAT_REPO_URL           default git@github.com:Pro100Kir2/scat.git (a fork or mirror, over SSH)
+#   SCAT_SSH_KEY            deploy key path, default /root/.ssh/scat_deploy_ed25519
 #   SCAT_BRANCH             default main
 #   SCAT_DIR                default /opt/scat
 #   SCAT_DOMAIN             default scat-search.ru       (www.<domain> redirects to it)
@@ -43,7 +52,8 @@ umask 022
 # ------------------------------------------------------------------------------------
 # Settings
 # ------------------------------------------------------------------------------------
-REPO_URL="${SCAT_REPO_URL:-https://github.com/Pro100kir2/scat.git}"
+REPO_URL="${SCAT_REPO_URL:-git@github.com:Pro100Kir2/scat.git}"
+SSH_KEY="${SCAT_SSH_KEY:-/root/.ssh/scat_deploy_ed25519}"
 BRANCH="${SCAT_BRANCH:-main}"
 APP_DIR="${SCAT_DIR:-/opt/scat}"
 DOMAIN="${SCAT_DOMAIN:-scat-search.ru}"
@@ -61,6 +71,12 @@ fi
 LOG_FILE="/var/log/scat-deploy.log"
 STATE_DIR="/var/lib/scat"
 STATE_FILE="${STATE_DIR}/.initialized"
+GITHUB_KNOWN_HOSTS="${STATE_DIR}/github_known_hosts"
+# Version of the server state this script sets up (layout of /opt/scat, .env keys, compose
+# project, Caddy wiring, marker format). Bump it only for changes an existing installation
+# cannot absorb through UPDATE; the marker is then invalid and the next run does a SETUP.
+# Ordinary edits to deploy.sh must not bump it: is_initialized already checks the real state.
+STATE_SCHEMA=1
 SETUP_STEPS=10
 UPDATE_STEPS=7
 TOTAL_STEPS=$SETUP_STEPS
@@ -94,40 +110,53 @@ ok()   { printf '      %s✓%s %s\n' "$C_GRN" "$C_OFF" "$*"; }
 warn() { printf '      %s!%s %s\n' "$C_YEL" "$C_OFF" "$*"; WARNINGS+=("$*"); }
 mark() { STATUS["$1"]="$2"; }
 
-# A failed UPDATE must not leave the server marked as good: the next run then does SETUP.
-# (SETUP removes the marker when it starts, so a failed SETUP never has one.)
-failure_hook() { [[ "$MODE" == UPDATE ]] && rm -f "$STATE_FILE"; return 0; }
+# What a failure means for the marker. SETUP deletes it before changing anything, so a failed
+# SETUP never has one. A failed UPDATE keeps it: it describes the last successful deployment
+# (commit, .env), and is_initialized re-checks the real server state on every run anyway, so
+# a transient failure (fetch, build) does not force a full SETUP next time.
+failure_hook() {
+  case "$MODE" in
+    SETUP)  printf '  Marker: not written (SETUP failed); the next run repeats SETUP.\n' >&2 ;;
+    UPDATE) printf '  Marker: kept from the last successful deployment; the next run re-checks the server.\n' >&2 ;;
+  esac
+  printf 'RESULT: %s FAILED at %s\n' "${MODE:-preflight}" "$COMPONENT" >>"$LOG_FILE" 2>/dev/null || true
+}
 
 die() {
-  failure_hook
   printf '\n%sFAILED: %s%s\n' "$C_RED" "$COMPONENT" "$C_OFF" >&2
   printf '%s\n' "$@" | sed 's/^/  /' >&2
+  failure_hook
   printf '  Full log: %s\n' "$LOG_FILE" >&2
   exit 1
 }
 
 on_error() {
   local code=$? line=${BASH_LINENO[0]} cmd=${BASH_COMMAND}
-  failure_hook
   printf '\n%sFAILED: %s%s (exit %d at line %d)\n  command: %s\n' \
     "$C_RED" "$COMPONENT" "$C_OFF" "$code" "$line" "$cmd" >&2
-  if [[ -s "$LOG_FILE" ]]; then
-    printf '  last log lines:\n' >&2
-    tail -n 15 "$LOG_FILE" | sed 's/^/    /' >&2
-  fi
+  failure_hook
   printf '  Full log: %s\n' "$LOG_FILE" >&2
   exit "$code"
 }
 trap on_error ERR
+
+# Everything printed from here on also goes to the log (colours stripped), so a failure's
+# reason is on the server afterwards, not only in the terminal that ran the script.
+start_logging() {
+  [[ "${SCAT_LOG_TEED:-0}" == 1 ]] && return 0   # a re-exec'd deploy.sh inherits the pipe
+  export SCAT_LOG_TEED=1
+  exec > >(tee >(sed -u $'s/\e\\[[0-9;]*m//g' >>"$LOG_FILE")) 2>&1
+}
 
 # Run a command with its output going to the log only; on failure show the tail.
 run() {
   printf '\n$ %s\n' "$*" >>"$LOG_FILE"
   if ! "$@" >>"$LOG_FILE" 2>&1; then
     local code=$?
-    failure_hook
-    printf '\n%sFAILED: %s%s\n  command: %s (exit %d)\n  last log lines:\n' "$C_RED" "$COMPONENT" "$C_OFF" "$*" "$code" >&2
+    printf '\n%sFAILED: %s%s\n  command: %s (exit %d)\n  last output:\n' "$C_RED" "$COMPONENT" "$C_OFF" "$*" "$code" >&2
+    # Output since the command started (it is already in the log; this is for the terminal).
     tail -n 25 "$LOG_FILE" | sed 's/^/    /' >&2
+    failure_hook
     printf '  Full log: %s\n' "$LOG_FILE" >&2
     exit "$code"
   fi
@@ -160,9 +189,10 @@ apt_install() {
 # ------------------------------------------------------------------------------------
 detect_os() {
   COMPONENT="OS"; printf '\n%s[preflight] Detecting operating system...%s\n' "$C_BLD" "$C_OFF"
-  [[ ${EUID} -eq 0 ]] || die "Run as root: sudo -E $0   (-E keeps GITHUB_TOKEN if you exported it)"
+  [[ ${EUID} -eq 0 ]] || die "Run as root: sudo $0"
   mkdir -p "$(dirname "$LOG_FILE")"; : >>"$LOG_FILE"; chmod 600 "$LOG_FILE"
-  printf '\n===== deploy %s =====\n' "$(date -Is)" >>"$LOG_FILE"
+  printf '\n===== deploy %s (%s) =====\n' "$(date -Is)" "$SELF" >>"$LOG_FILE"
+  start_logging
 
   [[ -r /etc/os-release ]] || die "/etc/os-release not found: unsupported system"
   # shellcheck disable=SC1091
@@ -359,53 +389,104 @@ PY
 # ------------------------------------------------------------------------------------
 # [5] Repository
 # ------------------------------------------------------------------------------------
-ASKPASS_DIR=""
-cleanup() { [[ -n "$ASKPASS_DIR" ]] && rm -rf "$ASKPASS_DIR"; unset SCAT_GIT_TOKEN; }
-trap cleanup EXIT
-
-# git with the token supplied through GIT_ASKPASS from the environment: it never appears
-# in argv (ps), in .git/config, in a credential store or in the log.
-git_auth() {
-  if [[ -n "${SCAT_GIT_TOKEN:-}" ]]; then
-    GIT_ASKPASS="$ASKPASS_DIR/askpass" GIT_TERMINAL_PROMPT=0 \
-      git -c credential.helper= -c core.askPass="$ASKPASS_DIR/askpass" "$@"
-  else
-    GIT_TERMINAL_PROMPT=0 git -c credential.helper= "$@"
-  fi
+# Repository identity for comparisons: host/owner/repo, lowercase (GitHub names are
+# case-insensitive), the same for git@host:o/r(.git), ssh://git@host/o/r and https://host/o/r.
+repo_slug() {
+  local url="${1%/}"
+  url="${url%.git}"
+  case "$url" in
+    git@*:*)   url="${url#git@}"; url="${url/://}" ;;
+    ssh://*)   url="${url#ssh://}"; url="${url#*@}" ;;
+    http*://*) url="${url#*://}"; url="${url#*@}" ;;
+  esac
+  printf '%s\n' "${url,,}"
+}
+is_ssh_url() { [[ "$1" == git@*:* || "$1" == ssh://* ]]; }
+repo_host() { local slug; slug="$(repo_slug "$REPO_URL")"; printf '%s\n' "${slug%%/*}"; }
+# owner/repo with its original case, for links shown to people.
+repo_path() {
+  local url="${REPO_URL%.git}"
+  case "$url" in git@*:*) url="${url#*:}" ;; *://*) url="${url#*://}"; url="${url#*/}" ;; esac
+  printf '%s\n' "$url"
 }
 
-prepare_token() {
-  ASKPASS_DIR="$(mktemp -d)"; chmod 700 "$ASKPASS_DIR"
-  cat >"$ASKPASS_DIR/askpass" <<'SH'
-#!/bin/sh
-case "$1" in
-  Username*) echo "x-access-token" ;;
-  *) echo "$SCAT_GIT_TOKEN" ;;
-esac
-SH
-  chmod 700 "$ASKPASS_DIR/askpass"
+# GitHub's SSH host keys from its API, i.e. authenticated by TLS: no trust-on-first-use prompt
+# and no stale pinned key when GitHub rotates them. Refreshed on every fetch; the saved copy
+# is used when the API is unreachable.
+refresh_github_known_hosts() {
+  [[ "$(repo_host)" == github.com ]] || return 0
+  install -d -m 0700 "$STATE_DIR"
+  local meta keys tmp
+  meta="$(curl -fsS --max-time 20 https://api.github.com/meta 2>/dev/null || true)"
+  keys="$(grep -oE '"(ssh-ed25519|ecdsa-sha2-nistp256|ssh-rsa) [A-Za-z0-9+/=]+"' <<<"$meta" | tr -d '"' || true)"
+  if [[ -z "$keys" ]]; then
+    if [[ -s "$GITHUB_KNOWN_HOSTS" ]]; then
+      warn "api.github.com unreachable; using the saved GitHub SSH host keys"
+      return 0
+    fi
+    die "Cannot fetch GitHub's SSH host keys from https://api.github.com/meta (needed to verify github.com)."
+  fi
+  tmp="$(mktemp "${GITHUB_KNOWN_HOSTS}.XXXXXX")"
+  sed 's/^/github.com /' <<<"$keys" >"$tmp"
+  chmod 644 "$tmp"; mv -f "$tmp" "$GITHUB_KNOWN_HOSTS"
+}
 
-  if [[ -n "${GITHUB_TOKEN:-}" ]]; then
-    export SCAT_GIT_TOKEN="$GITHUB_TOKEN"
-  elif git_auth ls-remote --heads "$REPO_URL" >/dev/null 2>&1; then
-    info "repository is public; no token needed"
+# ssh for git: never prompts (BatchMode) and verifies the host key strictly. When the deploy
+# key exists it is the only key offered (IdentitiesOnly): otherwise another key GitHub knows
+# (a forwarded agent, an IdentityFile in root's ssh config) could authenticate first and get
+# "Repository not found". Without it, root's own keys and a forwarded agent (sudo -E) are used.
+git_ssh_command() {
+  local cmd="ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=20"
+  [[ "$(repo_host)" == github.com ]] && cmd+=" -o UserKnownHostsFile=$(printf %q "$GITHUB_KNOWN_HOSTS")"
+  [[ -f "$SSH_KEY" ]] && cmd+=" -o IdentitiesOnly=yes -i $(printf %q "$SSH_KEY")"
+  printf '%s\n' "$cmd"
+}
+
+# git for anything that talks to the remote. No credential helpers, no terminal prompts.
+git_remote() {
+  GIT_SSH_COMMAND="$(git_ssh_command)" GIT_TERMINAL_PROMPT=0 git -c credential.helper= "$@"
+}
+
+# Proves read access before anything is fetched. Without an accepted key it creates the
+# deploy key (only its public half is ever printed) and stops with instructions.
+ensure_git_access() {
+  if ! is_ssh_url "$REPO_URL"; then
+    git_remote ls-remote --heads "$REPO_URL" >/dev/null 2>&1 \
+      || die "Cannot read ${REPO_URL}. Plain HTTPS works only for public repositories; use the SSH URL."
     return 0
-  elif has_tty; then
-    local token=""
-    read -r -s -p "      GitHub token (input hidden): " token </dev/tty; echo >/dev/tty
-    [[ -n "$token" ]] || die "No token entered"
-    export SCAT_GIT_TOKEN="$token"; token=""
-  else
-    die "The repository needs authentication. Export GITHUB_TOKEN (read-only PAT) and run: sudo -E $0"
   fi
-  unset GITHUB_TOKEN
-  git_auth ls-remote --heads "$REPO_URL" >/dev/null 2>&1 \
-    || die "GitHub rejected the token or the repository URL (${REPO_URL}). Check the PAT has read access to it."
+  have ssh || apt_install openssh-client
+  refresh_github_known_hosts
+  local out
+  if out="$(git_remote ls-remote --heads "$REPO_URL" 2>&1)"; then
+    ok "SSH access to ${REPO_URL}"
+    return 0
+  fi
+  printf '\n$ git ls-remote --heads %s\n%s\n' "$REPO_URL" "$out" >>"$LOG_FILE"
+  case "$out" in
+    *"Host key verification failed"*)
+      die "The SSH host key of $(repo_host) could not be verified." "$(tail -n 3 <<<"$out")" ;;
+    *"Permission denied"*|*"Repository not found"*|*"not appear to be a git repository"*)
+      if [[ ! -f "$SSH_KEY" ]]; then
+        install -d -m 0700 "$(dirname "$SSH_KEY")"
+        ssh-keygen -q -t ed25519 -N '' -C "scat-deploy@$(uname -n)" -f "$SSH_KEY" >/dev/null
+        info "created the deploy key $SSH_KEY (the private key never leaves this server)"
+      fi
+      die "$(repo_host) does not accept this server's SSH key for ${REPO_URL}." \
+          "Add this public key as a read-only deploy key (leave 'Allow write access' off):" \
+          "  https://$(repo_host)/$(repo_path)/settings/keys  ->  Add deploy key" \
+          "$(cat "${SSH_KEY}.pub")" \
+          "Then run deploy.sh again." ;;
+    *)
+      die "Cannot reach ${REPO_URL} over SSH:" "$(tail -n 3 <<<"$out")" ;;
+  esac
 }
 
-strip_credentials_from_remote() {
+# Deployments made before the switch to SSH authenticated with a GitHub token. Make sure no
+# such token survives in the checkout: in the origin URL or as a stored auth header.
+scrub_legacy_credentials() {
   local url; url="$(git -C "$APP_DIR" remote get-url origin 2>/dev/null || true)"
-  if [[ "$url" =~ ^https://[^/]*@ ]]; then
+  if [[ "$url" =~ ^https?://[^/]*@ ]]; then
     git -C "$APP_DIR" remote set-url origin "$REPO_URL"
     warn "removed credentials that were embedded in the origin URL of $APP_DIR"
   fi
@@ -420,18 +501,19 @@ sync_repository() {
   step "Fetching the repository..." "Repository"
   REPO_CHANGED=0
   if [[ "${SCAT_REEXEC:-0}" == 1 && -d "$APP_DIR/.git" ]]; then
-    # Re-executed by the previous deploy.sh right after it fetched: no second fetch, no token.
-    strip_credentials_from_remote
+    # Re-executed by the previous deploy.sh right after it fetched: no second fetch.
+    scrub_legacy_credentials
     local head; head="$(git -C "$APP_DIR" rev-parse HEAD)"
     [[ "${SCAT_PREV_COMMIT:-}" != "$head" ]] && REPO_CHANGED=1
     ok "continuing with the deploy.sh of ${head:0:7} (fetched by the previous script)"
   else
-    prepare_token
+    ensure_git_access
     if [[ -d "$APP_DIR/.git" ]]; then
-      strip_credentials_from_remote
+      scrub_legacy_credentials
       local current; current="$(git -C "$APP_DIR" remote get-url origin)"
-      if [[ "${current%.git}" != "${REPO_URL%.git}" ]]; then
-        warn "origin was ${current}; pointing it to ${REPO_URL}"
+      if [[ "$current" != "$REPO_URL" ]]; then
+        # Expected once per server when an HTTPS checkout moves to SSH.
+        info "origin: ${current} -> ${REPO_URL}"
         git -C "$APP_DIR" remote set-url origin "$REPO_URL"
       fi
       if [[ -n "$(git -C "$APP_DIR" status --porcelain --untracked-files=no)" ]]; then
@@ -439,7 +521,7 @@ sync_repository() {
             "$(git -C "$APP_DIR" status --short --untracked-files=no | head -20)" \
             "Commit/stash or revert them (git -C $APP_DIR stash), then run deploy.sh again."
       fi
-      run git_auth -C "$APP_DIR" fetch --prune origin "$BRANCH"
+      run git_remote -C "$APP_DIR" fetch --prune origin "$BRANCH"
       local before; before="$(git -C "$APP_DIR" rev-parse HEAD)"
       if [[ "$(git -C "$APP_DIR" rev-parse --abbrev-ref HEAD)" != "$BRANCH" ]]; then
         run git -C "$APP_DIR" checkout "$BRANCH"
@@ -455,12 +537,10 @@ sync_repository() {
         die "$APP_DIR exists, is not empty and is not a git checkout. Move it away or set SCAT_DIR."
       fi
       mkdir -p "$(dirname "$APP_DIR")"
-      run git_auth clone --branch "$BRANCH" "$REPO_URL" "$APP_DIR"
+      run git_remote clone --branch "$BRANCH" "$REPO_URL" "$APP_DIR"
       REPO_CHANGED=1; REPO_PREV_COMMIT=""
       ok "cloned into $APP_DIR at $(git -C "$APP_DIR" rev-parse --short HEAD)"
     fi
-    strip_credentials_from_remote
-    cleanup; ASKPASS_DIR=""
   fi
 
   local f missing=()
@@ -485,7 +565,7 @@ reexec_if_script_changed() {
   local prev="${REPO_PREV_COMMIT:-}"
   [[ "$REPO_CHANGED" == 1 ]] || prev="$(git -C "$APP_DIR" rev-parse HEAD)"
   trap - ERR
-  exec env -u GITHUB_TOKEN -u SCAT_GIT_TOKEN SCAT_REEXEC=1 SCAT_PREV_COMMIT="$prev" SCAT_FORCE_SETUP="$FORCE_SETUP" \
+  exec env SCAT_REEXEC=1 SCAT_PREV_COMMIT="$prev" SCAT_FORCE_SETUP="$FORCE_SETUP" \
     bash "$repo_script" "${ORIG_ARGS[@]}"
 }
 
@@ -536,7 +616,8 @@ setup_env() {
   if [[ -z "$token" ]]; then warn "ADMIN_TOKEN is empty: admin endpoints are disabled"
   elif ((${#token} < 32)); then warn "ADMIN_TOKEN is shorter than 32 characters; consider: openssl rand -hex 32"; fi
   [[ "${trust,,}" =~ ^(true|1|yes)$ ]] || warn "TRUST_PROXY_HEADERS is not true: behind Caddy every visitor shares one rate limit"
-  grep -qiE '^(GITHUB_TOKEN|GH_TOKEN)=' "$env_file" && die "$env_file contains a GitHub token; remove it (it is only needed for git)"
+  # .env is handed to the backend container: a token left there from the old HTTPS flow would leak into it.
+  grep -qiE '^(GITHUB_TOKEN|GH_TOKEN)=' "$env_file" && die "$env_file contains a GitHub token; remove it (git uses SSH, and the backend must not see it)"
 
   if ((created)); then ok "created $env_file (mode 600) with a generated ADMIN_TOKEN"
   elif ((${#ADDED_KEYS[@]})); then ok "kept existing values; added: ${ADDED_KEYS[*]}"
@@ -780,6 +861,7 @@ configure_firewall() {
 # [10] DNS
 # ------------------------------------------------------------------------------------
 DNS_READY=1
+SERVER_IP4=""
 public_ip() {  # public_ip 4|6
   curl -"$1" -fsS --max-time 6 https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null | awk -F= '$1=="ip"{print $2}' \
     || curl -"$1" -fsS --max-time 6 https://api64.ipify.org 2>/dev/null || true
@@ -788,7 +870,9 @@ public_ip() {  # public_ip 4|6
 check_dns() {
   step "Checking DNS..." "DNS"
   local ip4 ip6 name a aaaa
-  ip4="$(public_ip 4)"; ip6="$(public_ip 6)"
+  ip4="$(public_ip 4)"; ip6="$(public_ip 6)"; SERVER_IP4="$ip4"
+  # The address the server's outgoing traffic uses. DNS must point to it: a mismatch keeps
+  # SETUP incomplete (no marker, exit 3) whatever the local HTTPS checks say.
   info "server public IPv4: ${ip4:-unknown}, IPv6: ${ip6:-none}"
   for name in "$DOMAIN" "$WWW_DOMAIN" "$API_DOMAIN"; do
     a="$(getent ahostsv4 "$name" 2>/dev/null | awk '{print $1}' | sort -u | xargs || true)"
@@ -810,86 +894,114 @@ check_dns() {
     mark DNS "PENDING"
     info "Point A records for ${DOMAIN}, ${WWW_DOMAIN} and ${API_DOMAIN} to ${ip4:-this server}."
     info "Caddy obtains certificates by itself once DNS propagates; just re-run deploy.sh to re-check."
-    [[ "${STRICT_DNS:-0}" == 1 ]] && die "DNS is not ready (STRICT_DNS=1)"
+    # An `if`, not `[[ ]] && die`: as the last command that would return 1 and set -e would
+    # abort the whole SETUP here instead of continuing with a warning.
+    if [[ "${STRICT_DNS:-0}" == 1 ]]; then die "DNS is not ready (STRICT_DNS=1)"; fi
   fi
 }
 
 # ------------------------------------------------------------------------------------
 # [11] End-to-end checks through Caddy
 # ------------------------------------------------------------------------------------
-http_code() { curl -s -o /dev/null -w '%{http_code}' --max-time 15 "$@" || true; }
+# Requests go to this server's own Caddy (--resolve name:port:127.0.0.1) under the real host
+# names, so curl still verifies every certificate against the public CAs. That tests what the
+# server controls (Caddy, certificates, routing, containers) without depending on the server
+# reaching its own public IP, which many cloud NATs do not route back (no hairpin NAT).
+lcurl() {
+  local name args=()
+  for name in "$DOMAIN" "$WWW_DOMAIN" "$API_DOMAIN"; do
+    args+=(--resolve "${name}:443:127.0.0.1" --resolve "${name}:80:127.0.0.1")
+  done
+  curl "${args[@]}" "$@"
+}
+http_code() { lcurl -s -o /dev/null -w '%{http_code}' --max-time 15 "$@" || true; }
 
 check_routing_locally() {  # before DNS: Caddy answers for the host names on port 80
   local name code
   for name in "$DOMAIN" "$API_DOMAIN" "$WWW_DOMAIN"; do
-    code="$(http_code --resolve "${name}:80:127.0.0.1" "http://${name}/")"
+    code="$(http_code "http://${name}/")"
     [[ "$code" =~ ^30[178]$ ]] || die "Caddy does not route http://${name} (HTTP ${code})"
   done
   ok "Caddy routes all three host names locally (HTTPS waits for DNS)"
 }
 
+# https://${DOMAIN} answers 200 with a certificate curl accepts. Retries while Caddy obtains
+# certificates after a reload. Leaves the last status in HTTPS_CODE.
+HTTPS_CODE=""
+https_verified() {  # https_verified <attempts>
+  local tries=0
+  while ((tries < $1)); do
+    HTTPS_CODE="$(http_code -I "https://${DOMAIN}")"
+    [[ "$HTTPS_CODE" == 200 ]] && return 0
+    tries=$((tries + 1))
+    if ((tries < $1)); then sleep 5; fi
+  done
+  return 1
+}
+
 health_checks() {
   step "Running health checks..." "HTTPS"
   if ((DNS_READY == 0)); then
-    COMPONENT="Caddy"; check_routing_locally
-    mark HTTPS "PENDING (DNS)"; mark Frontend "PENDING (DNS)"; mark API "PENDING (DNS)"
-    return 0
+    # DNS stays a separate requirement: check_dns already marked it PENDING, so the run cannot
+    # count as successful. A valid local certificate proves nothing about DNS (Caddy keeps
+    # certificates for up to 90 days after the names move away); it only lets us check the
+    # rest of the stack now instead of later.
+    if ! https_verified 6; then
+      COMPONENT="Caddy"; check_routing_locally
+      mark HTTPS "PENDING (DNS)"; mark Frontend "PENDING (DNS)"; mark API "PENDING (DNS)"
+      return 0
+    fi
+    warn "Caddy serves valid certificates locally, but DNS does not point to this server (${SERVER_IP4:-unknown}); checking the stack anyway, SETUP stays incomplete until DNS is fixed"
   fi
 
-  # Certificates are issued on first use after a reload; allow Caddy a moment.
-  local tries=0 code=""
-  while ((tries < 20)); do
-    code="$(http_code -I "https://${DOMAIN}")"
-    [[ "$code" == 200 ]] && break
-    sleep 5; tries=$((tries + 1))
-  done
-  [[ "$code" == 200 ]] || die "https://${DOMAIN} answered HTTP ${code:-none}" \
-      "$(curl -sSI --max-time 15 "https://${DOMAIN}" 2>&1 | head -5)" \
+  https_verified 20 || die "https://${DOMAIN} answered HTTP ${HTTPS_CODE:-none} (checked through this server's Caddy)" \
+      "$(lcurl -sSI --max-time 15 "https://${DOMAIN}" 2>&1 | head -5)" \
       "$(journalctl -u caddy -n 15 --no-pager 2>&1 | grep -iE 'error|acme|certificate' | tail -5)"
   # FastAPI answers HEAD on GET routes with 405, so the API root is checked with GET.
+  local code
   code="$(http_code "https://${API_DOMAIN}/")"
   [[ "$code" == 200 ]] || die "https://${API_DOMAIN} answered HTTP ${code:-none}"
-  local expiry; expiry="$(echo | openssl s_client -connect "${DOMAIN}:443" -servername "${DOMAIN}" 2>/dev/null | openssl x509 -noout -enddate 2>/dev/null | cut -d= -f2 || true)"
+  local expiry; expiry="$(echo | openssl s_client -connect 127.0.0.1:443 -servername "${DOMAIN}" 2>/dev/null | openssl x509 -noout -enddate 2>/dev/null | cut -d= -f2 || true)"
   ok "valid certificates (curl verified); ${DOMAIN} expires ${expiry:-?}, Caddy renews automatically"
-  local hsts; hsts="$(curl -sI --max-time 10 "https://${DOMAIN}" | grep -ci '^strict-transport-security' || true)"
+  local hsts; hsts="$(lcurl -sI --max-time 10 "https://${DOMAIN}" | grep -ci '^strict-transport-security' || true)"
   ((hsts > 0)) || warn "no HSTS header on https://${DOMAIN}"
   code="$(http_code -I "http://${DOMAIN}/")"
   [[ "$code" =~ ^30[178]$ ]] || die "http://${DOMAIN} does not redirect to HTTPS (HTTP ${code})"
-  local location; location="$(curl -sI --max-time 10 "https://${WWW_DOMAIN}/" | awk 'tolower($1)=="location:"{print $2}' | tr -d '\r' || true)"
+  local location; location="$(lcurl -sI --max-time 10 "https://${WWW_DOMAIN}/" | awk 'tolower($1)=="location:"{print $2}' | tr -d '\r' || true)"
   [[ "$location" == "https://${DOMAIN}/" ]] || die "https://${WWW_DOMAIN} should redirect to https://${DOMAIN}/ (Location: ${location:-none})"
   ok "http -> https and ${WWW_DOMAIN} -> ${DOMAIN} redirects"
   mark HTTPS OK
 
   COMPONENT="Frontend"
   local page asset
-  page="$(curl -fsS --max-time 15 "https://${DOMAIN}/")" || die "cannot load https://${DOMAIN}/"
+  page="$(lcurl -fsS --max-time 15 "https://${DOMAIN}/")" || die "cannot load https://${DOMAIN}/"
   [[ "$page" == *'id="app"'* ]] || die "https://${DOMAIN}/ does not contain the app shell"
   asset="$(grep -oE '/assets/index-[A-Za-z0-9_-]+\.js' <<<"$page" | head -1 || true)"
   [[ -n "$asset" ]] || die "no JavaScript bundle referenced by index.html"
-  if ! curl -fsS --max-time 15 "https://${DOMAIN}${asset}" | grep -qF "https://${API_DOMAIN}"; then
-    local other; other="$(curl -fsS --max-time 15 "https://${DOMAIN}${asset}" | grep -oE 'https://api\.[A-Za-z0-9.-]+' | sort -u | xargs || true)"
+  if ! lcurl -fsS --max-time 15 "https://${DOMAIN}${asset}" | grep -qF "https://${API_DOMAIN}"; then
+    local other; other="$(lcurl -fsS --max-time 15 "https://${DOMAIN}${asset}" | grep -oE 'https://api\.[A-Za-z0-9.-]+' | sort -u | xargs || true)"
     [[ -z "$other" ]] || die "the deployed bundle calls ${other}, not https://${API_DOMAIN}. Fix VITE_API_URL in .env and rebuild."
     warn "could not find https://${API_DOMAIN} in ${asset}; check the browser network tab once"
   fi
-  # One page, no client routes: unknown paths must be real 404s (no soft-404 copies of the home page).
+  # Each page is prerendered; anything else must be a real 404, not a soft-404 copy of the home page.
   code="$(http_code "https://${DOMAIN}/some/deep/link")"
   [[ "$code" == 404 ]] || die "unknown paths must return 404: /some/deep/link -> HTTP ${code}"
   ok "app shell, bundle ${asset} (calls https://${API_DOMAIN}), 404 for unknown paths"
   mark Frontend OK
 
   COMPONENT="API"
-  curl -fsS --max-time 15 "https://${API_DOMAIN}/api/health" | grep -q '"ok"' || die "GET /api/health failed"
-  curl -fsS --max-time 20 "https://${API_DOMAIN}/api/scan/status" | grep -q '"cache_state"' || die "GET /api/scan/status failed"
-  local results; results="$(curl -fsS --max-time 30 "https://${API_DOMAIN}/api/results")" || die "GET /api/results failed"
+  lcurl -fsS --max-time 15 "https://${API_DOMAIN}/api/health" | grep -q '"ok"' || die "GET /api/health failed"
+  lcurl -fsS --max-time 20 "https://${API_DOMAIN}/api/scan/status" | grep -q '"cache_state"' || die "GET /api/scan/status failed"
+  local results; results="$(lcurl -fsS --max-time 30 "https://${API_DOMAIN}/api/results")" || die "GET /api/results failed"
   grep -q '"nodes"' <<<"$results" || die "/api/results has no nodes field"
   local state; state="$(grep -oE '"cache_state":"[a-z]+"' <<<"$results" | cut -d'"' -f4 || true)"
   ok "/api/health, /api/scan/status, /api/results (cache: ${state:-?})"
 
   local acao
-  acao="$(curl -sS -D - -o /dev/null --max-time 15 -H "Origin: https://${DOMAIN}" "https://${API_DOMAIN}/api/health" \
+  acao="$(lcurl -sS -D - -o /dev/null --max-time 15 -H "Origin: https://${DOMAIN}" "https://${API_DOMAIN}/api/health" \
           | awk 'tolower($1)=="access-control-allow-origin:"{print $2}' | tr -d '\r' || true)"
   [[ "$acao" == "https://${DOMAIN}" ]] || die "CORS: origin https://${DOMAIN} is not allowed (got '${acao:-nothing}')"
-  acao="$(curl -sS -D - -o /dev/null --max-time 15 -H "Origin: https://evil.example" "https://${API_DOMAIN}/api/health" \
+  acao="$(lcurl -sS -D - -o /dev/null --max-time 15 -H "Origin: https://evil.example" "https://${API_DOMAIN}/api/health" \
           | awk 'tolower($1)=="access-control-allow-origin:"{print $2}' | tr -d '\r' || true)"
   [[ -z "$acao" ]] || die "CORS: a foreign origin is allowed (${acao})"
   code="$(http_code -X OPTIONS -H "Origin: https://${DOMAIN}" -H "Access-Control-Request-Method: POST" \
@@ -905,6 +1017,14 @@ health_checks() {
   [[ "$code" == 404 ]] || warn "/docs is reachable publicly (HTTP ${code})"
   ok "admin endpoints need the token; API docs are not public"
   mark API OK
+
+  # The public path, from inside: informative only. Many clouds do not route a VM's own
+  # public IP back to it; visitors are unaffected by that, so it never fails the deploy.
+  if curl -fsS -o /dev/null --max-time 10 "https://${DOMAIN}/" 2>/dev/null; then
+    ok "https://${DOMAIN} is also reachable through its public address"
+  else
+    warn "this server cannot reach https://${DOMAIN} through its public address (NAT hairpin or firewall); the checks above passed through Caddy directly. Confirm from another machine: curl -I https://${DOMAIN}"
+  fi
 }
 
 # ------------------------------------------------------------------------------------
@@ -922,14 +1042,21 @@ container_ready() {  # container_ready <service>: exists, running and healthy ri
 st_marker() {
   [[ -f "$STATE_FILE" ]] && [[ "$(marker_get status)" == ok ]]
 }
-st_marker_matches() {  # marker written by this very deploy.sh for these domains
-  [[ "$(marker_get deploy_sha256)" == "$SELF_SHA" && "$(marker_get domain)" == "$DOMAIN" \
+# Same state schema and the same domains/directory. Deliberately not the hash of deploy.sh:
+# that made every harmless edit of this script turn a healthy server into a SETUP (which
+# deletes the marker first). What SETUP produces is verified directly by the st_* checks
+# (e.g. the Caddy site file must equal what this script renders), so a script change that
+# expects a different state still leads to SETUP through them, or through STATE_SCHEMA.
+st_marker_matches() {
+  [[ "$(marker_get state_schema)" == "$STATE_SCHEMA" && "$(marker_get domain)" == "$DOMAIN" \
      && "$(marker_get api_domain)" == "$API_DOMAIN" && "$(marker_get app_dir)" == "$APP_DIR" ]]
 }
+# A checkout of the configured repository whatever the transport (sync_repository switches
+# an HTTPS origin to SSH in either mode), with no credentials embedded in the URL.
 st_repo() {
   [[ -d "$APP_DIR/.git" ]] || return 1
   local url; url="$(git -C "$APP_DIR" remote get-url origin 2>/dev/null)" || return 1
-  [[ "${url%.git}" == "${REPO_URL%.git}" ]] && ! [[ "$url" =~ ^https://[^/]*@ ]]
+  [[ "$(repo_slug "$url")" == "$(repo_slug "$REPO_URL")" ]] && ! [[ "$url" =~ ^https?://[^/]*@ ]]
 }
 st_env() {
   local f="$APP_DIR/.env" key origins api
@@ -975,9 +1102,9 @@ st_caddy_config() {  # installed site file == what this script would install, an
   return "$rc"
 }
 st_caddy_validate() { caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null 2>&1; }
-st_https() {
-  curl -fsS --max-time 15 "https://${DOMAIN}/" 2>/dev/null | grep -q 'id="app"' \
-    && curl -fsS --max-time 15 "https://${API_DOMAIN}/api/health" 2>/dev/null | grep -q '"ok"'
+st_https() {  # through this server's Caddy, certificates verified (see lcurl)
+  lcurl -fsS --max-time 15 "https://${DOMAIN}/" 2>/dev/null | grep -q 'id="app"' \
+    && lcurl -fsS --max-time 15 "https://${API_DOMAIN}/api/health" 2>/dev/null | grep -q '"ok"'
 }
 
 # True only when every critical part of the deployment is in place and working. The marker
@@ -988,7 +1115,7 @@ is_initialized() {
   local failed=() check label
   local -a checks=(
     "st_marker|successful setup marker ${STATE_FILE}"
-    "st_marker_matches|marker written by this deploy.sh for ${DOMAIN}"
+    "st_marker_matches|marker for state schema ${STATE_SCHEMA}, ${DOMAIN}, ${APP_DIR}"
     "st_repo|git checkout ${APP_DIR} with a clean origin"
     "st_env|${APP_DIR}/.env present, mode 600, required keys"
     "st_docker|Docker installed, running, enabled"
@@ -1020,46 +1147,65 @@ is_initialized() {
 # ------------------------------------------------------------------------------------
 invalidate_marker() { rm -f "$STATE_FILE"; }
 
+# Every check whose success the marker vouches for. Lists what is missing in CRITICAL_MISSING.
+CRITICAL_MISSING=()
 critical_checks_passed() {
   local key
+  CRITICAL_MISSING=()
   for key in Repository Environment "Backend container" "Frontend container" Caddy Firewall DNS HTTPS Frontend API; do
-    [[ "${STATUS[$key]:-}" == OK ]] || return 1
+    [[ "${STATUS[$key]:-}" == OK ]] || CRITICAL_MISSING+=("${key}=${STATUS[$key]:-not run}")
   done
+  ((${#CRITICAL_MISSING[@]} == 0))
 }
 
 write_marker() {  # only after every critical check of this run passed
-  install -d -m 0700 "$STATE_DIR"
-  local tmp; tmp="$(mktemp "${STATE_DIR}/.initialized.XXXXXX")"
-  local initialized_at; initialized_at="$(marker_get initialized_at)"
-  [[ "$MODE" == SETUP || -z "$initialized_at" ]] && initialized_at="$(date -Is)"
-  cat >"$tmp" <<EOM
+  COMPONENT="Marker"
+  local commit env_hash site_hash initialized_at tmp
+  # Gather everything first: a failure here must be reported, not end up as an empty field.
+  commit="$(git -C "$APP_DIR" rev-parse HEAD 2>&1)" || die "cannot read the deployed commit for the marker:" "$commit"
+  env_hash="$(env_sha)"; [[ -n "$env_hash" ]] || die "cannot hash $APP_DIR/.env for the marker"
+  site_hash="$(sha256sum "$CADDY_SITE_FILE" 2>/dev/null | cut -d' ' -f1)"
+  [[ -n "$site_hash" ]] || die "cannot hash $CADDY_SITE_FILE for the marker"
+  initialized_at="$(marker_get initialized_at)"
+  if [[ "$MODE" == SETUP || -z "$initialized_at" ]]; then initialized_at="$(date -Is)"; fi
+
+  install -d -m 0700 "$STATE_DIR" || die "cannot create $STATE_DIR"
+  tmp="$(mktemp "${STATE_DIR}/.initialized.XXXXXX")" || die "cannot create a temporary file in $STATE_DIR"
+  cat >"$tmp" <<EOM || { rm -f "$tmp"; die "cannot write $tmp"; }
 # Written by deploy.sh after a successful ${MODE} and all health checks. Do not edit.
 status=ok
+state_schema=${STATE_SCHEMA}
 initialized_at=${initialized_at}
 updated_at=$(date -Is)
 mode=${MODE}
-commit=$(git -C "$APP_DIR" rev-parse HEAD)
-env_sha256=$(env_sha)
+commit=${commit}
+env_sha256=${env_hash}
 deploy_sha256=${SELF_SHA}
-caddy_site_sha256=$(sha256sum "$CADDY_SITE_FILE" | cut -d' ' -f1)
+caddy_site_sha256=${site_hash}
 domain=${DOMAIN}
 api_domain=${API_DOMAIN}
 app_dir=${APP_DIR}
 EOM
-  chmod 600 "$tmp"; mv -f "$tmp" "$STATE_FILE"
+  chmod 600 "$tmp" && mv -f "$tmp" "$STATE_FILE" || { rm -f "$tmp"; die "cannot move the marker into $STATE_FILE"; }
+  # The next run decides SETUP/UPDATE from this file; make sure it says what we meant.
+  st_marker && st_marker_matches || die "$STATE_FILE was written but does not read back as a valid marker"
+  printf 'RESULT: %s OK, marker %s written (commit %s)\n' "$MODE" "$STATE_FILE" "${commit:0:7}" >>"$LOG_FILE"
 }
 
 # ------------------------------------------------------------------------------------
 # The two modes
 # ------------------------------------------------------------------------------------
+SETUP_INCOMPLETE=0
 full_setup() {
   MODE=SETUP; TOTAL_STEPS=$SETUP_STEPS; STEP=0
-  # A setup that fails half-way must not leave a "successful" marker behind.
-  invalidate_marker
   inspect_existing
   install_base
-  install_docker
+  # First, so an older copy of deploy.sh hands over to the checkout's version before it has
+  # changed anything (the marker included); nothing below this line ran yet.
   sync_repository
+  # A setup that fails from here on must not leave a "successful" marker behind.
+  invalidate_marker
+  install_docker
   setup_env
   deploy_containers rebuild
   configure_caddy
@@ -1068,9 +1214,11 @@ full_setup() {
   health_checks
   if critical_checks_passed; then
     write_marker
-    ok "setup verified; marker written to ${STATE_FILE}"
+    ok "setup verified; marker written to ${STATE_FILE}; the next run will UPDATE"
   else
-    warn "setup is not complete (HTTPS could not be verified yet); no marker written, the next run repeats SETUP"
+    SETUP_INCOMPLETE=1
+    warn "SETUP INCOMPLETE: not verified yet: ${CRITICAL_MISSING[*]}. No marker written; the next run repeats SETUP."
+    printf 'RESULT: SETUP INCOMPLETE (%s); no marker\n' "${CRITICAL_MISSING[*]}" >>"$LOG_FILE"
   fi
 }
 
@@ -1088,7 +1236,7 @@ update_deployment() {
   configure_firewall
   check_dns
   health_checks
-  critical_checks_passed || die "the update finished but not every check passed; see the summary above"
+  critical_checks_passed || die "the update finished but these checks did not pass: ${CRITICAL_MISSING[*]}"
   write_marker
 }
 
@@ -1116,7 +1264,7 @@ summary() {
   printf '\n  Mode: %s   Marker: %s\n' "$MODE" "$([[ -f "$STATE_FILE" ]] && echo "$STATE_FILE" || echo 'not written')"
   printf '\n  Site: https://%s   API: https://%s\n' "$DOMAIN" "$API_DOMAIN"
   printf '  Admin token: stored in %s/.env (ADMIN_TOKEN); not printed.\n' "$APP_DIR"
-  printf '  Redeploy after pushing changes: sudo -E %s/deploy.sh\n' "$APP_DIR"
+  printf '  Redeploy after pushing changes: sudo %s/deploy.sh\n' "$APP_DIR"
 }
 
 usage() {
@@ -1147,6 +1295,11 @@ main() {
     full_setup
   fi
   summary
+  # Not a failure, not a success: DNS/HTTPS are not ready yet. Scripts and people should notice.
+  if ((SETUP_INCOMPLETE)); then exit 3; fi
 }
 
-main "$@"
+# Sourcing (tests) loads the functions without deploying anything.
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi

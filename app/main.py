@@ -5,10 +5,14 @@ from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from app import config
 from app.api.routes import router as api_router
-from app.services.scan_service import scan_service
+from app.probes import service as probe_service_module
+from app.probes.api import MAX_BODY_BYTES, router as probes_router
+from app.services.scan_service import ALL, scan_service
+from app.services.scanner import ScanQuery
 
 DEBUG = os.getenv("DEBUG", "false").lower() in ("true", "1", "yes")
 
@@ -41,9 +45,20 @@ uvicorn_logger = logging.getLogger("uvicorn.access")
 uvicorn_logger.addFilter(DeduplicateFilter())
 
 
+async def schedule_probe_round(query: ScanQuery, entry: dict) -> None:
+    """A new full scan finished: its best configs get provider reachability checks.
+    Only here; page loads and country searches never start probe work."""
+    if query == ALL:
+        await probe_service_module.probe_service.schedule_scan(entry)
+
+
+scan_service.add_listener(schedule_probe_round)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     background = None
+    probe_maintenance = asyncio.create_task(probe_service_module.probe_service.run_forever(), name="skat-probes")
     if config.AUTO_REFRESH:
         background = asyncio.create_task(scan_service.refresh_forever(scan_now=config.AUTO_SCAN_ON_STARTUP), name="skat-refresh")
     elif config.AUTO_SCAN_ON_STARTUP:
@@ -51,6 +66,9 @@ async def lifespan(app: FastAPI):
 
     yield
 
+    probe_maintenance.cancel()
+    with suppress(asyncio.CancelledError):
+        await probe_maintenance
     if background:
         background.cancel()
         with suppress(asyncio.CancelledError):
@@ -85,7 +103,20 @@ async def noindex(request, call_next):
     return response
 
 
+# Probe and provider endpoints accept small JSON only. Enforced before the body is read.
+@app.middleware("http")
+async def limit_body_size(request, call_next):
+    if request.method == "POST" and request.url.path.startswith(("/api/probes/", "/api/providers")):
+        length = request.headers.get("content-length")
+        if length is None:
+            return JSONResponse({"detail": "Content-Length required"}, status_code=411)
+        if not length.isdigit() or int(length) > MAX_BODY_BYTES:
+            return JSONResponse({"detail": "Request body too large"}, status_code=413)
+    return await call_next(request)
+
+
 app.include_router(api_router, prefix="/api")
+app.include_router(probes_router, prefix="/api")
 
 
 @app.get("/", include_in_schema=False)

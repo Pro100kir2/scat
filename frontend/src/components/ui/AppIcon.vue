@@ -11,6 +11,10 @@ const PATHS = {
   close: 'M6 6l12 12 M18 6L6 18',
   link: 'M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1 M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1',
   external: 'M14 5h5v5 M19 5l-8 8 M17 14v5H5V7h5',
+  plus: 'M12 5v14 M5 12h14',
+  terminal: 'M4 5h16v14H4z M7.5 9.5l3 2.5-3 2.5 M12.5 15h4',
+  steps: 'M9 6h11 M9 12h11 M9 18h11 M4.5 6h.5 M4.5 12h.5 M4.5 18h.5',
+  back: 'M15 6l-6 6 6 6',
 } as const
 
 export type IconName = keyof typeof PATHS

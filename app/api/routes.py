@@ -1,5 +1,6 @@
 import base64
 import hmac
+import logging
 import re
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Path, Query, Request, Response
@@ -7,17 +8,30 @@ from fastapi.responses import PlainTextResponse
 
 from app import config
 from app.api.rate_limit import client_ip, scan_limiter
+from app.probes import service as probe_service_module
 from app.services.presenter import public_node
 from app.services.scan_service import scan_service
 from app.services.scanner import ScanQuery
 from app.services.subscription import generate_subscription_content
 
 router = APIRouter()
+logger = logging.getLogger("skat.api")
 
 
 def _cached_top(query: ScanQuery = ScanQuery()) -> list[dict]:
     entry = scan_service.entry(query)
     return entry["top"] if entry else []
+
+
+def _public_nodes(nodes: list[dict]) -> list[dict]:
+    """Public cards, with provider reachability for each. Reads stored results only."""
+    try:
+        reach = probe_service_module.probe_service.reachability([n["fingerprint"] for n in nodes])
+    except Exception:
+        logger.exception("provider reachability unavailable")
+        reach = {}
+    return [{**public_node(node, rank), "reachability": reach.get(node["fingerprint"], [])}
+            for rank, node in enumerate(nodes, 1)]
 
 
 def _no_store(response: Response) -> None:
@@ -44,7 +58,7 @@ async def get_results(response: Response):
     scan_service.request_scan()
     return {
         **scan_service.status(),
-        "nodes": [public_node(node, rank) for rank, node in enumerate(_cached_top(), 1)],
+        "nodes": _public_nodes(_cached_top()),
     }
 
 
@@ -119,7 +133,7 @@ async def search_by_country(
         "country": query.country,
         "outcome": outcome,
         **status,
-        "nodes": [public_node(node, rank) for rank, node in enumerate(_cached_top(query), 1)],
+        "nodes": _public_nodes(_cached_top(query)),
     }
 
 

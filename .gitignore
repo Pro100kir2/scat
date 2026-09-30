@@ -48,3 +48,6 @@ frontend/node_modules/
 frontend/dist/
 .vercel
 frontend/dist-server/
+
+# Probe binaries (built by the Dockerfile)
+probe/dist/

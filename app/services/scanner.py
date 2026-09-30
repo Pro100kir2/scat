@@ -1027,6 +1027,7 @@ class VLESSScannerManager:
         self.stage = "rechecking"
         if candidates:
             await self._deep_check(xray_binary, candidates)
+        ranked = rank_candidates(candidates)
         top = rank_nodes(candidates)[: config.TOP_COUNT]
 
         duration = round(time.time() - start_time, 2)
@@ -1041,6 +1042,9 @@ class VLESSScannerManager:
             "working": len(candidates),
             "sources": [asdict(r) for r in source_results],
             "top": [node_result(node) for node in top],
+            # Every candidate in rank order (the top ones first). Provider probes check these
+            # for network reachability; `top` and its ranking are unaffected.
+            "ranked": [node_result(node) for node in ranked],
         }
 
     def get_status(self) -> dict:
@@ -1094,6 +1098,16 @@ def is_usable(node: VLESSNode) -> bool:
 
 def rank_nodes(candidates: list[VLESSNode]) -> list[VLESSNode]:
     return sorted((n for n in candidates if is_usable(n)), key=rank_score)
+
+
+def rank_candidates(candidates: list[VLESSNode]) -> list[VLESSNode]:
+    """All candidates: usable ones by rank_score (so the prefix equals rank_nodes), then the
+    rest by latency. This is the "top 25" provider probes check."""
+    usable = rank_nodes(candidates)
+    ids = {id(n) for n in usable}
+    rest = sorted((n for n in candidates if id(n) not in ids),
+                  key=lambda n: (n.latency_ms is None, n.latency_ms or 0))
+    return usable + rest
 
 
 scanner_manager = VLESSScannerManager()

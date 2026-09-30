@@ -336,3 +336,80 @@ button {
     transform: translateY(16px) scale(0.98);
   }
 }
+
+/* --- Inner pages (providers): same rhythm as the home sections, below the fixed header. */
+.page {
+  padding-top: calc(68px + clamp(40px, 7vw, 88px));
+  padding-bottom: clamp(72px, 10vw, 128px);
+}
+
+.page-title {
+  margin-top: 10px;
+  font-family: var(--font-display);
+  font-size: clamp(2.4rem, 5.5vw, 3.8rem);
+  line-height: 1.02;
+  letter-spacing: -0.01em;
+}
+
+.page-title em {
+  font-style: italic;
+  color: var(--pearl);
+}
+
+.page-lead {
+  max-width: 660px;
+  margin-top: 18px;
+  color: var(--text-2);
+  font-size: 17px;
+}
+
+.page-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 28px;
+}
+
+.panel {
+  padding: clamp(20px, 3vw, 32px);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: linear-gradient(180deg, rgba(16, 38, 52, 0.55), rgba(10, 26, 37, 0.55));
+}
+
+/* Form fields without the search icon's inset. */
+.input {
+  width: 100%;
+  min-height: 44px;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: rgba(8, 22, 32, 0.6);
+  color: var(--text);
+  font: inherit;
+  font-size: 15px;
+  transition: border-color 0.2s var(--ease-out), background-color 0.2s var(--ease-out);
+}
+
+.input::placeholder {
+  color: var(--text-3);
+}
+
+.input:hover {
+  border-color: var(--line-strong);
+}
+
+.input:focus {
+  outline: none;
+  border-color: rgba(143, 214, 207, 0.55);
+  background: rgba(8, 22, 32, 0.9);
+}
+
+.input[aria-invalid='true'] {
+  border-color: rgba(236, 154, 134, 0.7);
+}
+
+textarea.input {
+  min-height: 96px;
+  resize: vertical;
+}

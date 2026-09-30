@@ -75,3 +75,29 @@ REFRESH_COOLDOWN_SECONDS = int(os.getenv("REFRESH_COOLDOWN_SECONDS", str(10 * 60
 MAX_QUEUED_SCANS = int(os.getenv("MAX_QUEUED_SCANS", "3"))
 # Trust X-Forwarded-For (only enable behind your own reverse proxy).
 TRUST_PROXY_HEADERS = _env_bool("TRUST_PROXY_HEADERS", False)
+
+# --- Provider probes -----------------------------------------------------------
+# Probes are small agents on volunteers' devices inside ISP networks. They only test
+# whether a VPN endpoint is reachable from that network (TCP/TLS/HTTP), never VLESS.
+PROBE_DB_PATH = Path(os.getenv("PROBE_DB_PATH", str(DATA_DIR / "probes.db")))
+# Public https origin of this API, used in install commands. Empty = taken from the request.
+PUBLIC_API_URL = os.getenv("PUBLIC_API_URL", "").strip().rstrip("/")
+# Where the prebuilt probe binaries and SHA256SUMS live (built into the backend image).
+PROBE_DIST_DIR = Path(os.getenv("PROBE_DIST_DIR", str(BASE_DIR / "probe" / "dist")))
+PROBE_INSTALLER = Path(os.getenv("PROBE_INSTALLER", str(BASE_DIR / "probe" / "install.sh")))
+# New probes stay "pending" (visible, but their results are ignored) until an admin approves them.
+PROBE_AUTO_APPROVE = _env_bool("PROBE_AUTO_APPROVE", False)
+
+PROBE_HEARTBEAT_SECONDS = int(os.getenv("PROBE_HEARTBEAT_SECONDS", "30"))
+PROBE_OFFLINE_AFTER_SECONDS = int(os.getenv("PROBE_OFFLINE_AFTER_SECONDS", "100"))  # ~3 missed heartbeats
+PROBE_RESULT_TTL_SECONDS = int(os.getenv("PROBE_RESULT_TTL_SECONDS", str(24 * 60 * 60)))
+PROBE_JOB_TTL_SECONDS = int(os.getenv("PROBE_JOB_TTL_SECONDS", str(15 * 60)))  # unclaimed jobs expire
+PROBE_JOB_MAX_ATTEMPTS = int(os.getenv("PROBE_JOB_MAX_ATTEMPTS", "2"))
+PROBE_JOBS_PER_POLL = int(os.getenv("PROBE_JOBS_PER_POLL", "10"))
+PROBE_TARGET_COUNT = int(os.getenv("PROBE_TARGET_COUNT", str(CANDIDATE_COUNT)))  # best configs checked by probes
+PROBE_ENROLLMENT_TTL_SECONDS = int(os.getenv("PROBE_ENROLLMENT_TTL_SECONDS", str(24 * 60 * 60)))
+PROBE_CREDENTIAL_MAX_AGE_SECONDS = int(os.getenv("PROBE_CREDENTIAL_MAX_AGE_SECONDS", str(30 * 24 * 60 * 60)))
+# A probe that cannot reach this itself is having network trouble; its failures don't count then.
+PROBE_CONTROL_URL = os.getenv("PROBE_CONTROL_URL", "https://www.gstatic.com/generate_204")
+PROBE_REQUESTS_PER_MINUTE = int(os.getenv("PROBE_REQUESTS_PER_MINUTE", "120"))  # per probe
+PROBE_ENROLLMENTS_PER_HOUR = int(os.getenv("PROBE_ENROLLMENTS_PER_HOUR", "10"))  # per client IP

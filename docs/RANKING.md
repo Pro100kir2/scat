@@ -11,7 +11,9 @@ protocol and [ADMIN.md](ADMIN.md) for the admin panel.
    checks (≥ `DEEP_MIN_SUCCESS` of `DEEP_ATTEMPTS` latency checks and a completed 2 MB download).
    Probes can never promote a config that failed these (`ranking.usable`).
 2. **Primary key: the probe-confirmation score.**
-   `score = number of providers whose approved probes confirmed the config's endpoint reachable`.
+   `score = number of networks whose approved probes confirmed the config's endpoint reachable`.
+   A network is the probe's **detected ASN** (looked up from the address it registered from);
+   when detection failed, the provider the volunteer picked.
    1 of 4 providers confirms → 1 point, 2 → 2, 3 → 3, 4 → 4. Not a percentage, not a latency, not
    the number of jobs sent or probes contacted: a point needs a probe's actual `SUCCESS`.
 3. **Tie-break: the backend's order** (`scanner.rank_score`: latency penalised by failed checks,
@@ -68,8 +70,9 @@ TCP connect otherwise. It does not run VLESS (by design: see PROBES.md). So a sc
   `jobs.key` → `targets.key` → `targets.fingerprint`. Configs sharing an endpoint share a target.
 - **No double counting.** A job takes one result (then it is `done`; a replay or duplicate is
   rejected and logged). Per probe, only its *latest conclusive* result per target counts. Per
-  provider, at most one point however many probes it has. One public IP backs at most one
-  provider's point (a bipartite matching), so one connection posing as several ISPs gets 1.
+  network (detected ASN, else chosen provider), at most one point however many probes it has, so
+  differently named "providers" inside one AS count once. One public IP backs at most one
+  network's point (a bipartite matching), so one connection posing as several ISPs gets 1.
 - **Fake confirmations.** A client must pass verification (the server must see its request),
   and hidden spot checks keep checking it; a lying probe loses its approval and all its results.
   Pending, disabled and spot-check-failed probes never count, whatever is in the table.

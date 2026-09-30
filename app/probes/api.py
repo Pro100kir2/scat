@@ -290,10 +290,12 @@ async def register(body: RegisterRequest, request: Request, response: Response):
     _no_store(response)
     enroll_limiter.check(client_ip(request))
     try:
-        return svc().register(body.token, agent_version=body.agent_version, profile=body.profile,
-                              platform=body.platform, public_ip=client_ip(request))
+        reply = svc().register(body.token, agent_version=body.agent_version, profile=body.profile,
+                               platform=body.platform, public_ip=client_ip(request))
     except EnrollmentError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from None
+    svc().schedule_network_detection(reply["probe_id"])  # its real ASN, from this very connection
+    return reply
 
 
 @router.post("/probes/heartbeat")

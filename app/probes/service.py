@@ -25,7 +25,7 @@ from typing import Callable, Iterable, Literal, Optional
 from urllib.parse import urlsplit
 
 from app import config, events
-from app.probes import profiles
+from app.probes import asn as asn_lookup, profiles
 from app.probes.releases import Manifest
 from app.probes.store import Store
 from app.probes.targets import (Target, TargetRejected, control_target, resolve_public, target_for_node,
@@ -59,6 +59,7 @@ MAX_LONG_POLL_SECONDS = 25
 CLEANUP_KEEP_SECONDS = 24 * 60 * 60
 DIAG_KEEP_BYTES = 16 * 1024
 VERIFY_TARGET_MAX_AGE = 3600
+NETWORK_RETRY_SECONDS = 60 * 60  # a failed ASN lookup is retried this much later
 
 # Why verification failed, as codes; the website and the admin panel phrase them.
 VERIFY_REASONS = {
@@ -113,6 +114,7 @@ class ProbeService:
         self._verify_ip: Optional[tuple[str, str, float]] = None
         self._activate: set[str] = set()
         self._rejected_logged: dict[str, float] = {}
+        self._network_tasks: set[asyncio.Task] = set()
         self.stats = {"jobs_created": 0, "jobs_reused": 0, "results_accepted": 0, "results_rejected": 0}
 
     # ================================================================== enrollment
@@ -571,6 +573,39 @@ class ProbeService:
             self._evaluate_verification(probe["id"])
         return {"accepted": accepted, "rejected": rejected}
 
+    # ================================================================== network detection
+    def schedule_network_detection(self, probe_id: str) -> None:
+        """After registration: find the probe's ASN in the background, never delaying the reply."""
+        task = asyncio.get_running_loop().create_task(self.detect_network(probe_id))
+        self._network_tasks.add(task)
+        task.add_done_callback(self._network_tasks.discard)
+
+    async def detect_network(self, probe_id: str) -> Optional[asn_lookup.Network]:
+        """Look up the ASN of the address the probe registered from. A failure is stored and
+        retried later (detect_pending_networks); the probe works the same either way."""
+        probe = self.store.one("SELECT public_ip FROM probes WHERE id=?", (probe_id,))
+        if probe is None:
+            return None
+        try:
+            network = await asn_lookup.lookup(probe["public_ip"] or "")
+        except asn_lookup.AsnLookupError as exc:
+            self.store.run("UPDATE probes SET net_checked_at=?, net_error=? WHERE id=?",
+                           (self.clock(), str(exc)[:200], probe_id))
+            return None
+        self.store.run("UPDATE probes SET net_asn=?, net_as_name=?, net_prefix=?, net_checked_at=?, net_error=NULL"
+                       " WHERE id=?", (network.asn, network.name, network.prefix, self.clock(), probe_id))
+        return network
+
+    async def detect_pending_networks(self, limit: int = 10) -> int:
+        """Maintenance: probes never looked up, and failed lookups due for a retry."""
+        rows = self.store.all(
+            "SELECT id FROM probes WHERE net_asn IS NULL AND status != 'disabled'"
+            " AND (net_checked_at IS NULL OR net_checked_at < ?) ORDER BY created_at DESC LIMIT ?",
+            (self.clock() - NETWORK_RETRY_SECONDS, limit))
+        for row in rows:
+            await self.detect_network(row["id"])
+        return len(rows)
+
     # ================================================================== verification
     async def _nonce_target(self) -> Optional[tuple[Target, str]]:
         """An HTTP_GET job to a one-time URL on this API: /api/probes/verify/<nonce>.
@@ -808,6 +843,7 @@ class ProbeService:
             try:
                 self.maintain()
                 await self.flush_activations()
+                await self.detect_pending_networks()
                 events.prune(self.clock())
             except Exception:
                 logger.exception("probe maintenance failed")
@@ -827,7 +863,7 @@ class ProbeService:
             "online": self.is_online(probe),
             "last_seen": probe.get("last_seen"),
             "region": probe.get("region") or (provider or {}).get("region"),
-            "asn": probe.get("asn") or (provider or {}).get("asn"),
+            "asn": probe.get("net_asn") or probe.get("asn") or (provider or {}).get("asn"),
             "platform": profiles.PROFILES.get(profile, profile or None),
             "version": probe.get("agent_version"),
         }
@@ -847,7 +883,8 @@ class ProbeService:
             own = [p for p in probes if p["provider_id"] == row["id"]]
             online = [p for p in own if self.is_online(p, now)]
             regions = sorted({p["region"] for p in own if p["region"]} | ({row["region"]} if row["region"] else set()))
-            asns = sorted({p["asn"] for p in own if p["asn"]} | ({row["asn"]} if row["asn"] else set()))
+            asns = sorted({p["net_asn"] or p["asn"] for p in own if p["net_asn"] or p["asn"]}
+                          | ({row["asn"]} if row["asn"] and not any(p["net_asn"] for p in own) else set()))
             providers.append({
                 **self._provider_public(row),
                 "regions": regions,
@@ -938,12 +975,13 @@ class ProbeService:
     def confirmations(self, fingerprints: list[str]) -> dict[str, dict]:
         """Probe confirmations per config: {fingerprint: {score, total, providers}}.
 
-        score = number of *providers* whose approved probes confirmed the config's endpoint
-        reachable (outcome SUCCESS, conclusive, not expired). Per probe only its latest
+        score = number of *networks* whose approved probes confirmed the config's endpoint
+        reachable (outcome SUCCESS, conclusive, not expired). A network is the probe's detected
+        ASN (the AS it really registered from); without one, the provider the volunteer picked.
+        So differently named "providers" inside one AS count once. Per probe only its latest
         conclusive result for the target counts, so repeated or duplicated answers never add
-        up, and a provider gives at most one point however many probes it has. One public
-        IP backs at most one provider's point, so registering several "providers" from one
-        connection gains nothing. total = providers with a conclusive latest result.
+        up, and a network gives at most one point however many probes it has. One public IP
+        backs at most one network's point. total = networks with a conclusive latest result.
 
         Pending, disabled and spot-check-failed probes never count; results of a probe that
         has since gone offline still count until they expire (they were real observations).
@@ -959,7 +997,7 @@ class ProbeService:
         if not keys:
             return out
         probes = {p["id"]: p for p in self.store.all(
-            "SELECT p.id, p.provider_id, p.public_ip, pr.name AS provider FROM probes p"
+            "SELECT p.id, p.provider_id, p.public_ip, p.net_asn, pr.name AS provider FROM probes p"
             " JOIN providers pr ON pr.id = p.provider_id WHERE p.status='approved'")}
         latest: dict[tuple[str, str], dict] = {}
         key_marks = ",".join("?" * len(keys))
@@ -972,16 +1010,17 @@ class ProbeService:
         per_key: dict[str, dict] = {}
         for key in keys:
             answered: set[str] = set()
-            confirming: dict[str, set[str]] = {}  # provider → public IPs (or probe IDs) that confirmed
+            confirming: dict[str, set[str]] = {}  # network → public IPs (or probe IDs) that confirmed
             names: dict[str, str] = {}
             for (probe_id, k), r in latest.items():
                 if k != key:
                     continue
                 probe = probes[probe_id]
-                answered.add(probe["provider_id"])
+                network = _network_key(probe)
+                answered.add(network)
                 if r["outcome"] == "SUCCESS":
-                    confirming.setdefault(probe["provider_id"], set()).add(probe["public_ip"] or probe_id)
-                    names[probe["provider_id"]] = probe["provider"]
+                    confirming.setdefault(network, set()).add(probe["public_ip"] or probe_id)
+                    names.setdefault(network, probe["provider"])
             matched = _match_providers_to_addresses(confirming)
             per_key[key] = {"score": len(matched), "total": len(answered),
                             "providers": sorted(names[p] for p in matched)}
@@ -1022,7 +1061,14 @@ class ProbeService:
             "storage_free_kb": diag.get("storage_free_kb"),
             "storage_total_kb": diag.get("storage_total_kb"),
             "region": p["region"],
-            "asn": p["asn"],
+            # Detected from the registration connection wins; what was typed stays as metadata.
+            "asn": p["net_asn"] or p["asn"],
+            "asn_detected": p["net_asn"],
+            "as_name": p["net_as_name"],
+            "net_prefix": p["net_prefix"],
+            "asn_claimed": p["asn"],
+            "network_checked_at": p["net_checked_at"],
+            "network_error": p["net_error"],
             "public_ip": p["public_ip"],
             "contact_phone": p["contact_phone"],
             "created_at": p["created_at"],
@@ -1071,6 +1117,9 @@ class ProbeService:
             digits = re.sub(r"\D", "", text)
             clauses = ["p.id LIKE ?"]
             params_q = [f"%{text.lower()}%"]
+            if re.fullmatch(r"(?i)AS\s*\d{1,10}", text):  # "AS8359": the detected network
+                clauses.append("p.net_asn = ?")
+                params_q.append(int(digits))
             if len(digits) >= 3:  # phone search matches the digits however they were typed
                 clauses.append("REPLACE(p.contact_phone, '+', '') LIKE ?")
                 params_q.append(f"%{digits}%")
@@ -1245,6 +1294,11 @@ class ProbeService:
     # Kept for the original admin endpoint and its tests.
     def admin_probes(self) -> list[dict]:
         return self.admin_list_probes(per_page=10_000)["items"]
+
+
+def _network_key(probe: dict) -> str:
+    """Identity of a probe's network for scoring: its detected ASN, else the chosen provider."""
+    return f"AS{probe['net_asn']}" if probe.get("net_asn") else probe["provider_id"]
 
 
 def _match_providers_to_addresses(confirming: dict[str, set[str]]) -> list[str]:

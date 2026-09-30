@@ -136,7 +136,7 @@ describe('Add provider', () => {
     const w = mount(AddProviderPage, stubs)
     await w.find('input[name="name"]').setValue('x')
     await w.find('input[name="country"]').setValue('RUS')
-    await w.find('input[name="asn"]').setValue('ASX')
+    await w.find('input[name="contact_phone"]').setValue('call me')
     await w.find('form').trigger('submit')
     expect(addProvider).not.toHaveBeenCalled()
     expect(w.findAll('[aria-invalid="true"]')).toHaveLength(3)
@@ -148,10 +148,10 @@ describe('Add provider', () => {
     const w = mount(AddProviderPage, stubs)
     await w.find('input[name="name"]').setValue(' МТС ')
     await w.find('input[name="region"]').setValue('Москва')
-    await w.find('input[name="asn"]').setValue('AS8359')
+    expect(w.find('input[name="asn"]').exists()).toBe(false)  // the network is detected, not typed
     await w.find('form').trigger('submit')
     await flushPromises()
-    expect(addProvider).toHaveBeenCalledWith({ name: 'МТС', country: 'RU', region: 'Москва', asn: 'AS8359', info: '', contact_phone: '' })
+    expect(addProvider).toHaveBeenCalledWith({ name: 'МТС', country: 'RU', region: 'Москва', info: '', contact_phone: '' })
     const methods = w.findAll('.method')
     expect(methods.map((m) => m.find('.method__title').text())).toEqual(['Интерактивная установка', 'Ручная установка'])
 

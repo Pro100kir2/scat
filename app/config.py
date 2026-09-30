@@ -119,6 +119,9 @@ PROBE_CREDENTIAL_MAX_AGE_SECONDS = int(os.getenv("PROBE_CREDENTIAL_MAX_AGE_SECON
 PROBE_CONTROL_URL = os.getenv("PROBE_CONTROL_URL", "https://www.gstatic.com/generate_204")
 PROBE_REQUESTS_PER_MINUTE = int(os.getenv("PROBE_REQUESTS_PER_MINUTE", "120"))  # per probe
 PROBE_ENROLLMENTS_PER_HOUR = int(os.getenv("PROBE_ENROLLMENTS_PER_HOUR", "10"))  # per client IP
+# The probe's real network (ASN, AS holder) is looked up from the IP it registered from.
+# {ip} is replaced by the address; empty disables detection (the typed ASN is used then).
+ASN_LOOKUP_URL = os.getenv("ASN_LOOKUP_URL", "https://stat.ripe.net/data/prefix-overview/data.json?resource={ip}")
 
 # --- Ranking ---------------------------------------------------------------------
 # The backend's Xray checks decide which configs work; among those, configs confirmed

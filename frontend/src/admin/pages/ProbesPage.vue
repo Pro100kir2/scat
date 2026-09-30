@@ -121,7 +121,7 @@ async function readAll() {
             <th scope="col">Provider</th>
             <th scope="col">Profile / version</th>
             <th scope="col">Device</th>
-            <th scope="col">IP · contact</th>
+            <th scope="col">Network · IP · contact</th>
             <th scope="col"><button @click="sortBy('created_at')">Registered{{ arrow('created_at') }}</button></th>
             <th scope="col"><button @click="sortBy('last_heartbeat')">Heartbeat{{ arrow('last_heartbeat') }}</button></th>
             <th scope="col"><button @click="sortBy('last_activity')">Activity{{ arrow('last_activity') }}</button></th>
@@ -150,7 +150,11 @@ async function readAll() {
                 {{ p.cpu ?? '' }}{{ p.cpu_cores ? ` ×${p.cpu_cores}` : '' }} · RAM {{ kb(p.mem_total_kb) }} · free {{ kb(p.storage_free_kb) }}
               </span>
             </td>
-            <td class="mono">{{ p.public_ip ?? '—' }}<br /><span class="muted">{{ p.contact_phone ?? '' }}</span></td>
+            <td class="mono">
+              <span :title="p.as_name ?? p.network_error ?? ''">{{ p.asn ? `AS${p.asn}` : '—' }}</span>
+              <span class="muted">{{ p.as_name ?? '' }}</span><br />
+              {{ p.public_ip ?? '—' }} <span class="muted">{{ p.contact_phone ?? '' }}</span>
+            </td>
             <td>{{ ago(p.created_at) }}</td>
             <td>{{ ago(p.last_heartbeat) }}</td>
             <td>{{ ago(p.last_activity) }}</td>

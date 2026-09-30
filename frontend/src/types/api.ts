@@ -122,7 +122,6 @@ export interface ProviderForm {
   name: string
   country: string
   region: string
-  asn: string
   info: string
   /** Optional; only the admin sees it. */
   contact_phone: string

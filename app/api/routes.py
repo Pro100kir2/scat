@@ -1,14 +1,15 @@
 import base64
-import hmac
 import logging
 import re
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Path, Query, Request, Response
+from fastapi import APIRouter, HTTPException, Path, Query, Request, Response
 from fastapi.responses import PlainTextResponse
 
 from app import config
+from app.admin.auth import require_admin  # noqa: F401 - re-exported for older imports
 from app.api.rate_limit import client_ip, scan_limiter
 from app.probes import service as probe_service_module
+from app.services import ranking
 from app.services.presenter import public_node
 from app.services.scan_service import scan_service
 from app.services.scanner import ScanQuery
@@ -18,9 +19,12 @@ router = APIRouter()
 logger = logging.getLogger("skat.api")
 
 
-def _cached_top(query: ScanQuery = ScanQuery()) -> list[dict]:
+def _cached_top(query: ScanQuery = ScanQuery(), limit: int = 0) -> list[dict]:
+    """The served ranking: backend-verified configs, probe-confirmed ones first (ranking.py)."""
     entry = scan_service.entry(query)
-    return entry["top"] if entry else []
+    # Like the cache's own top list, never more than TOP_COUNT, whatever `limit` asks for.
+    limit = min(limit, config.TOP_COUNT) if limit else config.TOP_COUNT
+    return ranking.final_top(entry, probe_service_module.probe_service.confirmations, limit)
 
 
 def _public_nodes(nodes: list[dict]) -> list[dict]:
@@ -36,14 +40,6 @@ def _public_nodes(nodes: list[dict]) -> list[dict]:
 
 def _no_store(response: Response) -> None:
     response.headers["Cache-Control"] = "no-store"
-
-
-def require_admin(authorization: str = Header(default="")) -> None:
-    if not config.ADMIN_TOKEN:
-        raise HTTPException(status_code=404)
-    scheme, _, token = authorization.partition(" ")
-    if scheme.lower() != "bearer" or not hmac.compare_digest(token, config.ADMIN_TOKEN):
-        raise HTTPException(status_code=401, detail="Invalid admin token")
 
 
 @router.get("/health")
@@ -74,7 +70,7 @@ async def request_scan(request: Request, response: Response):
     """Ask for fresh results. Returns immediately; a scan only runs if the cache is stale."""
     _no_store(response)
     scan_limiter.check(client_ip(request))
-    outcome = scan_service.request_scan()
+    outcome = scan_service.request_scan(trigger="visitor")
     return {"outcome": outcome, **scan_service.status()}
 
 
@@ -144,7 +140,7 @@ router.add_api_route("/scan/start", request_scan, methods=["POST"], include_in_s
 @router.get("/vless/top")
 async def get_top_vless(limit: int = Query(default=5, ge=1, le=50)):
     """Top working VLESS nodes (internal format)."""
-    nodes = _cached_top()[:limit]
+    nodes = _cached_top(limit=limit)
     entry = scan_service.entry()
     return {
         "status": "success",
@@ -161,7 +157,7 @@ async def get_vless_subscription(
     limit: int = Query(default=5, ge=1, le=50),
 ):
     """Subscription for clients (v2rayNG, NekoBox, Hiddify, Streisand, sing-box...)."""
-    content = generate_subscription_content(_cached_top()[:limit], format_type=format, rename=rename)
+    content = generate_subscription_content(_cached_top(limit=limit), format_type=format, rename=rename)
     title = base64.b64encode("Скат".encode()).decode()
     headers = {
         "Subscription-Userinfo": "upload=0; download=0; total=1073741824000; expire=0",
@@ -174,7 +170,7 @@ async def get_vless_subscription(
 @router.get("/vless/raw", response_class=PlainTextResponse)
 async def get_vless_raw(limit: int = Query(default=5, ge=1, le=50)):
     """Top VLESS links as plain text, one per line."""
-    return "\n".join(n["link"] for n in _cached_top()[:limit] if n.get("link"))
+    return "\n".join(n["link"] for n in _cached_top(limit=limit) if n.get("link"))
 
 
 @router.get("/sources")
@@ -187,20 +183,3 @@ async def get_sources():
         "sources": sources,
         "sources_status": entry["sources"] if entry else [],
     }
-
-
-@router.get("/admin/stats", dependencies=[Depends(require_admin)])
-async def admin_stats():
-    return {**scan_service.status(), "stats": scan_service.stats, "last_error": scan_service.last_error()}
-
-
-@router.post("/admin/scan", dependencies=[Depends(require_admin)])
-async def admin_force_scan():
-    """Rescan now, ignoring the cache."""
-    return {"outcome": scan_service.request_scan(force=True)}
-
-
-@router.post("/admin/cache/clear", dependencies=[Depends(require_admin)])
-async def admin_clear_cache():
-    scan_service.clear()
-    return {"status": "cleared"}

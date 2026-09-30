@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_vali
 from app import config
 from app.api.rate_limit import RateLimiter, client_ip
 from app.probes import profiles, service as service_module
+from app.probes.phone import InvalidPhone, normalize_phone
 from app.probes.releases import manifest
 from app.probes.service import EnrollmentError, ProbeAuthError, ProbeForbidden
 
@@ -66,6 +67,16 @@ class EnrollmentRequest(BaseModel):
     region: str = Field(default="", max_length=64)
     asn: Optional[str] = Field(default=None, max_length=16)
     info: str = Field(default="", max_length=500)
+    # Optional, for the admin only: never shown on the site or returned by any public endpoint.
+    contact_phone: Optional[str] = Field(default=None, max_length=32)
+
+    @field_validator("contact_phone")
+    @classmethod
+    def _phone(cls, v: Optional[str]) -> Optional[str]:
+        try:
+            return normalize_phone(v)
+        except InvalidPhone as exc:
+            raise ValueError(str(exc)) from None
 
     @field_validator("name")
     @classmethod
@@ -194,12 +205,6 @@ def current_probe(request: Request, authorization: str = Header(default="")) -> 
     return probe
 
 
-def require_admin(authorization: str = Header(default="")) -> None:
-    from app.api.routes import require_admin as check
-
-    check(authorization)
-
-
 # ====================================================================== website
 @router.get("/providers")
 async def list_providers(response: Response):
@@ -216,6 +221,7 @@ async def add_provider(body: EnrollmentRequest, request: Request, response: Resp
     result = svc().create_enrollment(
         name=body.name, country=body.country.upper(), region=body.region,
         asn=int(body.asn) if body.asn else None, info=body.info, client_ip=client_ip(request),
+        contact_phone=body.contact_phone,
     )
     base = api_base(request)
     script = f"{base}/api/probes/install.sh"
@@ -307,7 +313,19 @@ async def jobs(response: Response, probe: dict = Depends(current_probe),
 @router.post("/probes/results")
 async def results(body: ResultsRequest, response: Response, probe: dict = Depends(current_probe)):
     _no_store(response)
-    return svc().submit_results(probe, [r.model_dump() for r in body.results])
+    reply = svc().submit_results(probe, [r.model_dump() for r in body.results])
+    await svc().flush_activations()  # a probe that just passed verification starts working at once
+    return reply
+
+
+@router.get("/probes/verify/{nonce}", status_code=204, include_in_schema=False)
+async def verify(nonce: str, request: Request):
+    """The one-time URL of a verification or spot-check job. The probe's request arriving
+    here is the proof that it executes jobs; the answer is always an empty 204 so the
+    URL reveals nothing, whether the nonce is valid or not."""
+    public_limiter.check(client_ip(request))
+    svc().nonce_hit(nonce, client_ip(request))
+    return Response(status_code=204, headers={"Cache-Control": "no-store"})
 
 
 @router.post("/probes/rotate")
@@ -352,28 +370,3 @@ async def install_script(request: Request):
         raise HTTPException(status_code=500, detail="Invalid PUBLIC_API_URL")
     return PlainTextResponse(script.replace("__SCAT_API_URL__", base), media_type="text/x-shellscript",
                              headers={"Cache-Control": "no-cache"})
-
-
-# ====================================================================== admin
-@router.get("/admin/probes", dependencies=[Depends(require_admin)])
-async def admin_probes():
-    return {"probes": svc().admin_probes(), "stats": svc().stats}
-
-
-@router.post("/admin/probes/{probe_id}/{action}", dependencies=[Depends(require_admin)])
-async def admin_probe_action(probe_id: str, action: Literal["approve", "disable"]):
-    status = "approved" if action == "approve" else "disabled"
-    if not service_module.PROBE_ID_RE.match(probe_id) or not await svc().set_status(probe_id, status):
-        raise HTTPException(status_code=404, detail="No such probe")
-    return {"probe_id": probe_id, "status": status}
-
-
-@router.post("/admin/probes-round", dependencies=[Depends(require_admin)])
-async def admin_probe_round():
-    """Re-run the probe round for the current main cache (e.g. after approving probes)."""
-    from app.services.scan_service import scan_service
-
-    entry = scan_service.entry()
-    if not entry:
-        raise HTTPException(status_code=409, detail="No scan results yet")
-    return await svc().schedule_scan(entry)

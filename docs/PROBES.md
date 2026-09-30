@@ -11,7 +11,13 @@ A probe **never** runs VLESS or Xray, never acts as a VPN, never executes comman
 opens a listening port. It is a small, typed network-measurement agent that talks to the API
 over outbound HTTPS only.
 
+The two answers meet in the ranking: only configs the backend verified can be shown at all, and
+among them the ones reachable from more providers' networks rank first. Scoring, distribution,
+top-5 selection and the tests that prove them: [RANKING.md](RANKING.md). The admin panel:
+[ADMIN.md](ADMIN.md).
+
 - [Architecture](#architecture)
+- [Probe lifecycle and automatic verification](#probe-lifecycle-and-automatic-verification)
 - [Data model and states](#data-model-and-states)
 - [API](#api)
 - [Installation](#installation): [interactive](#interactive-installation), [manual](#manual-installation), [removal](#removal)
@@ -33,8 +39,9 @@ over outbound HTTPS only.
                      ├─ resolve hostnames on the backend, reject non-public addresses
                      ├─ one Target per config: TLS_CONNECT (tls/reality, with SNI) or TCP_CONNECT
                      ├─ targets table = current set (deduplicated by Target.key)
-                     └─ per online probe: one job per target without a fresh result,
-                        plus a control HTTP_GET if the probe's last control is > 30 min old
+                     └─ per online *approved* probe: one job per target without a fresh
+                        result, plus a control HTTP_GET if its last control is > 30 min old,
+                        plus (every PROBE_SPOT_CHECK_SECONDS) a hidden one-time-URL spot check
                                        │
           SQLite (DATA_DIR/probes.db)  │  jobs: queued → leased → done | expired
                                        ▼
@@ -43,7 +50,9 @@ over outbound HTTPS only.
    probe ── POST /api/probes/heartbeat every 30 s
                                        │
                                        ▼
-   GET /api/results ── reachability for the shown configs, read from stored results only
+   GET /api/results ── ranking.final_top: backend-usable configs ordered by probe
+                       confirmations (providers that reached them), then backend order;
+                       plus per-provider reachability, read from stored results only
 ```
 
 Components:
@@ -52,9 +61,12 @@ Components:
 |---|---|
 | `app/probes/targets.py` | the only job shapes, address/port/SNI validation, DNS on the backend |
 | `app/probes/profiles.py` | diagnostics → SUPPORTED/UNSUPPORTED + installation profile |
-| `app/probes/service.py` | enrollment, credentials, heartbeats, queue, results, aggregation, maintenance |
-| `app/probes/store.py` | SQLite schema (WAL, one connection on the event loop) |
-| `app/probes/api.py` | `/api/providers*`, `/api/probes/*`, `/api/admin/probes*` |
+| `app/probes/service.py` | enrollment, credentials, heartbeats, verification, queue, results, aggregation, confirmations, maintenance |
+| `app/probes/store.py` | SQLite schema and numbered migrations (WAL, one connection on the event loop) |
+| `app/probes/api.py` | `/api/providers*`, `/api/probes/*` (incl. the verification URL) |
+| `app/probes/phone.py` | the optional contact phone: E.164 normalisation |
+| `app/services/ranking.py` | the final, probe-aware ranking the public API serves |
+| `app/admin/api.py` | `/api/admin/*`: probes, sources, scanner, cache, settings, logs, health |
 | `app/probes/releases.py` | binaries + `SHA256SUMS` served from `PROBE_DIST_DIR` |
 | `probe/` | the Go agent (standard library only) and `install.sh` |
 | `frontend/src/pages/Providers*`, `AddProviderPage`, `InstallGuidePage` | the website side |
@@ -69,9 +81,11 @@ in-process `asyncio.Event`s.
 
 - **After a successful full scan** (the main, all-countries query). Country searches and page
   loads never create jobs.
-- **When a probe comes online** (first heartbeat, or back after being offline): it gets the
-  current targets it has no fresh result for.
-- **When an admin approves a probe**, or calls `POST /api/admin/probes-round`.
+- **When an approved probe comes online** (or back after being offline): it gets the current
+  targets it has no fresh result for.
+- **When a probe passes verification** (or an admin approves it), or on
+  `POST /api/admin/probes-round`.
+- **Pending probes get verification jobs only**, never real targets.
 
 ### Queue, retries, caching
 
@@ -91,10 +105,70 @@ The **control check**: before its first job (and every 30 min), a probe fetches
 `PROBE_CONTROL_URL` (a Google 204 page). If that fails, the probe's own internet is broken, so
 its FAILED/TIMEOUT results are stored as *inconclusive* and do not paint providers red.
 
+## Probe lifecycle and automatic verification
+
+```
+register (one-time token from the website)
+   │   status = pending, verify_state = none               website: 🟡 «Зонд зарегистрирован»
+   ▼
+first authenticated request (heartbeat or job poll)
+   │   verification round starts                            website: 🟡 «Проверяем зонд»
+   │   jobs: HTTP_GET https://<api>/api/probes/verify/<nonce>   (the proof)
+   │         HTTP_GET PROBE_CONTROL_URL                          (recorded, not required)
+   ▼
+the probe runs the jobs like any others and reports
+   │   passes when: the verify job answered SUCCESS with HTTP 204
+   │                AND the server itself saw the request for that nonce arrive
+   ├── yes → status = approved, verify_state = passed      website: 🟢 «Зонд проверен»
+   │         it gets the current targets at once
+   └── no  → stays pending, verify_state = failed + reason  website: 🔴 reason + what to do
+             retried automatically after PROBE_VERIFY_RETRY_SECONDS (30 min),
+             up to PROBE_VERIFY_MAX_ATTEMPTS (3); an admin can always re-run it
+```
+
+**Why this proves a real probe.** The agent never returns response bodies, so a result alone
+proves nothing: a fake client can answer `SUCCESS` to anything. The verification URL is on
+this API, so the backend *watches the request arrive* (`jobs.nonce_hit_at`). The nonce is 128
+random bits, belongs to one open job of one probe, and counts only while that job is open. A
+client that invents results fails with `nonce_not_received`; one that fetches the URL has
+executed a real job from its own network, which is exactly what a probe is for. The job is an
+ordinary `HTTP_GET` job, so every deployed agent passes without an update.
+
+**Reasons** (`probes.verify_reason`, the website and the admin panel phrase them):
+
+| Code | Meaning |
+|---|---|
+| `never_connected` | registered, then never contacted the server again |
+| `jobs_not_fetched` | online, but did not fetch the verification job before the deadline |
+| `no_result` | fetched it, never reported a result |
+| `api_unreachable` | reported FAILED/TIMEOUT: the API is not reachable from its network |
+| `unexpected_response` | success, but not HTTP 204: a proxy or captive portal answered |
+| `nonce_not_received` | reported success, but the request never arrived: a fake or broken client |
+| `probe_error` | the agent could not run the check (ERROR) |
+| `server_misconfigured` | `PUBLIC_API_URL` (or `PROBE_VERIFY_URL`) is not set: an error event is logged |
+| `spot_check_failed` | an approved probe answered SUCCESS to a spot check it never ran |
+
+**Spot checks.** Every `PROBE_SPOT_CHECK_SECONDS` (6 h) an approved probe's round carries one
+more one-time URL among its real jobs. Answering it `SUCCESS` without the request arriving
+proves the probe invents results: it goes back to pending (`spot_check_failed`, no automatic
+retry), all its results are marked inconclusive, and an error event is logged.
+
+`PROBE_AUTO_APPROVE=true` skips verification entirely (closed deployments only). The admin's
+«Approve» is a manual override for exceptional cases.
+
+**Contact phone.** The website form has an optional «Телефон для связи». It is normalised to
+E.164 (`8 912 345-67-89` → `+79123456789`), stored on the enrollment and copied to the probe
+at registration, and visible only in the admin panel (where it is searchable and editable). It
+is never returned by any public endpoint, never logged, and scrubbed from event data.
+
 ## Data model and states
 
 Tables (`app/probes/store.py`): `providers`, `enrollments`, `probes`, `jobs`, `results`,
-`targets`. A result row has endpoint (ip, port, server name), provider, probe, check type,
+`targets`, `verifications`; and for the admin panel `sources`, `scans`, `events`, `settings`,
+`admin_sessions`, `meta`. Migrations are numbered (`PRAGMA user_version`), each runs in one
+transaction; version 2 adds verification, contact phone and per-probe counters, marks probes
+an admin had already approved as verified, and marks existing probes as already seen (so
+upgrading does not ring the new-probe notification for all of them). A result row has endpoint (ip, port, server name), provider, probe, check type,
 outcome, latency, `checked_at`, `expires_at`. Individual probe results are kept, so per-probe
 views can be added later; the API currently aggregates per provider.
 
@@ -110,6 +184,9 @@ Per config and provider the API reports one of:
 | `OFFLINE` | the provider's probes are offline and there is no fresh result | dark light, «Зонд офлайн» |
 | `NOT_TESTED` | no result yet, the target was rejected, or the config is not in the probe set | empty ring, «Не проверялся» |
 
+Probe lifecycle (`ProbeService.lifecycle`, shown in the admin panel and the installation page):
+`registered` → `verifying` → `verified` | `verification_failed`; `disabled` by an admin.
+
 Providers appear publicly only once they have an approved probe. A probe is **Online** while
 its last request is at most `PROBE_OFFLINE_AFTER_SECONDS` (100 s ≈ 3 missed 30-s heartbeats)
 old.
@@ -124,8 +201,8 @@ Website:
 | Method | Path | Body → reply |
 |---|---|---|
 | GET | `/providers` | → `{providers[], probes[], offline_after_seconds}`; never starts checks |
-| POST | `/providers` | `{name, country, region?, asn?, info?}` → 201 `{enrollment_id, token, expires_at, provider, install{curl, wget, diagnose_only, ...}}`; 10/hour per IP |
-| POST | `/providers/enrollment` | `{enrollment_id, token}` → `{state: waiting \| installing \| unsupported \| registered \| online \| offline, diagnostics, probe}` |
+| POST | `/providers` | `{name, country, region?, asn?, info?, contact_phone?}` → 201 `{enrollment_id, token, expires_at, provider, install{curl, wget, diagnose_only, ...}}`; 10/hour per IP; the phone is never echoed |
+| POST | `/providers/enrollment` | `{enrollment_id, token}` → `{state: waiting \| installing \| unsupported \| registered \| verifying \| verified \| verification_failed \| disabled, diagnostics, probe, verification{state, reason, deadline, attempts, will_retry, online}}` |
 
 Installer and agent:
 
@@ -140,6 +217,7 @@ Installer and agent:
 | GET | `/probes/jobs?wait=0..25&limit=1..50` | → `{jobs: [...]}` (long poll) |
 | POST | `/probes/results` | `{results: [{job_id, outcome, latency_ms?, error?, http_status?, tls_version?}]}` (≤ 50) → `{accepted, rejected[]}` |
 | POST | `/probes/rotate` | → `{probe_id, secret}`; the old secret works for 1 more hour |
+| GET | `/probes/verify/{nonce}` | the one-time URL of verification and spot-check jobs; always an empty 204 |
 
 A job is always exactly one of:
 
@@ -153,8 +231,9 @@ Outcomes: `SUCCESS`, `FAILED`, `TIMEOUT`, `ERROR` (the probe could not run the c
 IPv6 route: never counted against the endpoint). Error codes are `^[a-z0-9_]{1,40}$`, never
 free text.
 
-Admin (`Authorization: Bearer $ADMIN_TOKEN`): `GET /admin/probes` (all probes with their IPs),
-`POST /admin/probes/{id}/approve|disable`, `POST /admin/probes-round`.
+Admin: see [ADMIN.md](ADMIN.md) (`/api/admin/probes` with filters, details, jobs, verification
+history; `POST /api/admin/probes/{id}/approve|disable|enable|verify|test`, `PATCH` contact,
+`DELETE`; `POST /api/admin/probes-round`).
 
 ## Installation
 
@@ -267,11 +346,17 @@ Binaries are built by the backend `Dockerfile` (`probe` stage, `go vet` + `go te
   website sends them in POST bodies, never in URLs. Secrets rotate (the server asks after 30
   days; the old secret stays valid for one hour so a crash mid-rotation is harmless). The agent
   writes credentials atomically with mode 0600.
-- **Abuse through user-owned probes.** New probes are `pending`: they may heartbeat and run jobs,
-  but their results count and their provider appears publicly only after an admin approves
-  them. Results are accepted only for the probe's own open jobs, and all target data is taken
-  from the job, not from the probe. Admins can disable a probe (403 from then on, open jobs
-  expire).
+- **Abuse through user-owned probes.** New probes are `pending` and get verification jobs only;
+  their results count and their provider appears publicly only after they pass automatic
+  verification (the server must see the one-time request arrive) or an admin approves them.
+  Hidden spot checks keep checking approved probes. Results are accepted only for the probe's
+  own open jobs, once (a replayed or duplicated result is rejected), and all target data is
+  taken from the job, not from the probe. In the score, a provider counts once however many
+  probes it has, only a probe's latest conclusive answer counts, and one public IP backs at most
+  one provider's point ([RANKING.md](RANKING.md)). Admins can disable or delete a probe (403/401
+  from then on, open jobs expire). Residual risk, stated plainly: a client that honestly
+  fetches every HTTP job but invents TCP/TLS outcomes is not caught by spot checks; per-provider
+  counting, the IP rule and the admin's view of each probe's network bound what it can do.
 - **Rate limits** (in memory, one API process): provider creation and registration 10/hour per
   IP, public probe endpoints 60/min per IP, agent requests 120/min per probe, failed
   authentication 30/min per IP. Body size is capped before parsing.
@@ -288,16 +373,17 @@ Providers are keyed by case-insensitive name and country ("МТС" and " мтс 
 "MTS" in Latin letters is another, merge in SQL if needed). One provider can have any number of
 probes in different cities; a provider is reachable when any of its approved probes succeeded.
 
-**Approving probes:**
+**New probes** verify themselves; nothing needs approving. The admin panel (`/admin/`) rings and
+shows a badge for every new probe, lists failed verifications with their reasons, and has
+approve / disable / enable / re-run verification / test job / delete. Still worth a look: that a
+new probe's IP plausibly belongs to the claimed provider (`whois`, ASN lookup). The same actions
+from a script:
 
 ```sh
-curl -H "Authorization: Bearer $ADMIN_TOKEN" https://api.scat-search.ru/api/admin/probes
-curl -X POST -H "Authorization: Bearer $ADMIN_TOKEN" https://api.scat-search.ru/api/admin/probes/prb_…/approve
+curl -H "Authorization: Bearer $ADMIN_TOKEN" "https://api.scat-search.ru/api/admin/probes?verification=failed"
+curl -X POST -H "Authorization: Bearer $ADMIN_TOKEN" https://api.scat-search.ru/api/admin/probes/prb_…/verify
 curl -X POST -H "Authorization: Bearer $ADMIN_TOKEN" https://api.scat-search.ru/api/admin/probes/prb_…/disable
 ```
-
-Check that the probe's IP (from the admin list) plausibly belongs to the claimed provider
-(`whois`, ASN lookup) before approving.
 
 **Configuration:** see the `PROBE_*` variables and `PUBLIC_API_URL` in `.env.example` and
 `app/config.py`. `PUBLIC_API_URL` must be set in production (deploy.sh does): behind Caddy the
@@ -315,7 +401,10 @@ API sees plain http and cannot build `https` install commands itself.
 | probe installed but Offline | `journalctl -u scat-probe` / `logread -e scat-probe`, `scat-probe check` |
 | `credentials rejected` in the log | the probe was deleted or its secret lost: `--uninstall`, then install with a new token |
 | `this probe is disabled` | an admin disabled it |
-| provider stays «Не проверялся» | the probe is pending approval, offline, or its control check fails (its internet is down) |
+| website: «Проверка зонда не пройдена» | the reason and what to do are shown; details in the admin panel (probe → verification history) |
+| every new probe fails with `server_misconfigured` | set `PUBLIC_API_URL` (deploy.sh does) |
+| every new probe fails with `api_unreachable` | the API's own address is unreachable from outside, or its TLS certificate is invalid |
+| provider stays «Не проверялся» | the probe is still verifying, offline, or its control check fails (its internet is down) |
 
 ## Developing a new probe implementation
 

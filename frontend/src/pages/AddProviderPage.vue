@@ -15,7 +15,7 @@ const SESSION_KEY = 'skat:enrollment'
 const COUNTRIES = ['RU', 'BY', 'KZ', 'UA', 'UZ', 'KG', 'AM', 'GE', 'AZ', 'TJ', 'MD', 'DE', 'NL', 'FI', 'TR', 'RS']
 
 const step = ref<Step>('form')
-const form = reactive<ProviderForm>({ name: '', country: 'RU', region: '', asn: '', info: '' })
+const form = reactive<ProviderForm>({ name: '', country: 'RU', region: '', asn: '', info: '', contact_phone: '' })
 const errors = reactive<Partial<Record<keyof ProviderForm, string>>>({})
 const formError = ref('')
 const sending = ref(false)
@@ -58,6 +58,7 @@ const FIELD_ERRORS: Record<string, string> = {
   region: 'Город или регион: до 64 символов, без ссылок',
   asn: 'ASN: число или вида AS8359',
   info: 'Дополнительно: до 500 символов, без ссылок',
+  contact_phone: 'Телефон: в международном формате, например +7 912 345-67-89',
 }
 
 function validate(): boolean {
@@ -66,6 +67,11 @@ function validate(): boolean {
   if (name.length < 2 || name.length > 48) errors.name = FIELD_ERRORS.name
   if (!/^[A-Za-z]{2}$/.test(form.country.trim())) errors.country = FIELD_ERRORS.country
   if (form.asn.trim() && !/^(AS)?\s*\d{1,10}$/i.test(form.asn.trim())) errors.asn = FIELD_ERRORS.asn
+  const phone = form.contact_phone.trim()
+  const digits = phone.replace(/\D/g, '')
+  if (phone && (!/^[+\d\s().-]+$/.test(phone) || digits.length < 8 || digits.length > 15)) {
+    errors.contact_phone = FIELD_ERRORS.contact_phone
+  }
   return Object.keys(errors).length === 0
 }
 
@@ -191,6 +197,18 @@ const manual = computed(() => {
           <small v-if="errors.asn" class="form__error">{{ errors.asn }}</small>
         </label>
         <label class="form__field form__field--wide">
+          <span>Телефон для связи <small>(необязательно)</small></span>
+          <input
+            v-model="form.contact_phone" class="input mono" name="contact_phone" type="tel" maxlength="32"
+            placeholder="+7 912 345-67-89" autocomplete="tel" inputmode="tel" :aria-invalid="!!errors.contact_phone"
+            aria-describedby="phone-hint"
+          />
+          <small v-if="errors.contact_phone" class="form__error">{{ errors.contact_phone }}</small>
+          <small v-else id="phone-hint" class="form__hint">
+            Только для администратора Ската, если понадобится уточнить что-то о зонде. Нигде не публикуется.
+          </small>
+        </label>
+        <label class="form__field form__field--wide">
           <span>Дополнительно</span>
           <textarea
             v-model="form.info" class="input" name="info" maxlength="500"
@@ -205,7 +223,7 @@ const manual = computed(() => {
         <button class="btn btn--primary" type="submit" :disabled="sending">
           {{ sending ? 'Отправляем…' : 'Продолжить' }}
         </button>
-        <p class="form__note">Мы не просим ни почту, ни пароли. Токен установки действует 24 часа.</p>
+        <p class="form__note">Мы не просим ни почту, ни пароли. Телефон — по желанию. Токен установки действует 24 часа.</p>
       </div>
     </form>
 

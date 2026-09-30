@@ -31,6 +31,7 @@ LOCK_POLL_SECONDS = 2.0
 
 ALL = ScanQuery()
 RequestOutcome = Literal["cached", "started", "joined", "cooldown", "busy"]
+Trigger = Literal["auto", "visitor", "admin"]
 ScanListener = Callable[[ScanQuery, dict], Awaitable[None]]
 
 
@@ -133,6 +134,8 @@ class ScanService:
         self.stats = {"cache_hits": 0, "scans_started": 0, "requests_joined": 0, "rejected_busy": 0}
         self._listeners: list[ScanListener] = []
         self._listener_tasks: set[asyncio.Task] = set()
+        # Optional scan history (app/services/scan_history.py); tests run without one.
+        self.history = None
 
     def add_listener(self, listener: ScanListener) -> None:
         """Called with (query, cache entry) after every successful scan, outside the scan lock."""
@@ -190,7 +193,7 @@ class ScanService:
         slot = self._slot(query)
         return not slot.running and not self.is_fresh(query) and not self._cooling_down(slot)
 
-    def request_scan(self, query: ScanQuery = ALL, force: bool = False) -> RequestOutcome:
+    def request_scan(self, query: ScanQuery = ALL, force: bool = False, trigger: Trigger = "visitor") -> RequestOutcome:
         """Start a scan unless a valid cache exists. Never starts two for the same query."""
         slot = self._slot(query)
         if slot.running:
@@ -207,8 +210,24 @@ class ScanService:
                 self.stats["rejected_busy"] += 1
                 return "busy"
         self.stats["scans_started"] += 1
-        slot.task = asyncio.create_task(self._run(query, force), name=f"skat-scan-{query.key}")
+        slot.task = asyncio.create_task(self._run(query, force, trigger), name=f"skat-scan-{query.key}")
         return "started"
+
+    def cancel(self, query: Optional[ScanQuery] = None) -> list[str]:
+        """Cancel the running (and queued) scans, or one query's. Xray is stopped and the
+        file lock released by the scan's own cleanup; the old cache stays as it was."""
+        cancelled = []
+        for key, slot in self._slots.items():
+            if slot.running and (query is None or key == query.key):
+                slot.task.cancel()
+                cancelled.append(key)
+        return cancelled
+
+    def running(self) -> list[dict]:
+        """Scans in flight: the one holding the scanner, then those waiting for it."""
+        live = self.scanner.get_status()
+        return [{"query": key, "state": "running" if live.get("query") == key else "queued"}
+                for key, slot in self._slots.items() if slot.running]
 
     def refresh_retry_after(self, cooldown_seconds: float, now: Optional[float] = None) -> int:
         """Seconds until visitors may force another refresh; 0 when allowed."""
@@ -219,7 +238,7 @@ class ScanService:
 
     def refresh(self) -> RequestOutcome:
         """Visitor-triggered rescan that ignores the cache. The old results stay visible until it finishes."""
-        outcome = self.request_scan(ALL, force=True)
+        outcome = self.request_scan(ALL, force=True, trigger="visitor")
         if outcome == "started":
             self._refreshed_ts = time.time()
         return outcome
@@ -230,7 +249,7 @@ class ScanService:
         if task is not None:
             await asyncio.shield(task)
 
-    async def _run(self, query: ScanQuery, force: bool) -> None:
+    async def _run(self, query: ScanQuery, force: bool, trigger: Trigger = "visitor") -> None:
         slot = self._slot(query)
         self.lock_path.parent.mkdir(parents=True, exist_ok=True)
         with open(self.lock_path, "w") as lock_file:
@@ -242,17 +261,29 @@ class ScanService:
                 except BlockingIOError:
                     waited = True  # another scan (this process or another) is running
                     await asyncio.sleep(LOCK_POLL_SECONDS)
+            scan_id = None
             try:
                 if waited and not force and self.is_fresh(query):
                     return  # someone refreshed this cache while we waited
                 logger.info("[%s] starting scan (cache: %s)", query.key, self.cache_state(query))
+                scan_id = self.history.started(query.key, trigger) if self.history else None
                 result = await self.scanner.run_scan(query)
+                result["scan_id"] = scan_id
                 entry = slot.cache.save(result)
                 slot.error = slot.error_ts = None
+                if self.history:
+                    self.history.finished(scan_id, result=result)
                 self._notify(query, entry)
             except ScanFailed as exc:
                 slot.error, slot.error_ts = str(exc), time.time()
                 logger.error("[%s] scan failed: %s", query.key, exc)
+                if self.history:
+                    self.history.finished(scan_id, error=str(exc))
+            except asyncio.CancelledError:
+                logger.warning("[%s] scan cancelled", query.key)
+                if self.history:
+                    self.history.finished(scan_id, cancelled=True)
+                raise
             finally:
                 fcntl.flock(lock_file, fcntl.LOCK_UN)
 
@@ -260,15 +291,50 @@ class ScanService:
         """Keep the main (all countries) cache warm: rescan whenever it expires."""
         while True:
             if scan_now:
-                self.request_scan(ALL)
+                self.request_scan(ALL, trigger="auto")
             scan_now = True
-            await self.wait(ALL)
+            try:
+                await self.wait(ALL)
+            except asyncio.CancelledError:
+                if asyncio.current_task().cancelling():
+                    raise  # this loop itself is being stopped
+                # An admin cancelled the scan; keep refreshing on schedule.
             entry = self.entry(ALL)
             if entry and self.is_fresh(ALL):
                 delay = entry["expires_ts"] - time.time()
             else:
                 delay = FAILURE_COOLDOWN_SECONDS
             await asyncio.sleep(max(delay, 60))
+
+    def cache_files(self) -> list[dict]:
+        """Every cache file on disk, for the admin panel."""
+        out = []
+        for path in sorted(self.data_dir.glob("scan_*.json")):
+            key = path.stem.removeprefix("scan_")
+            query = ALL if key == ALL.key else ScanQuery(country=key)
+            entry = self.entry(query)
+            try:
+                size = path.stat().st_size
+            except OSError:
+                size = None
+            out.append({"query": key, "state": self.cache_state(query), "size_bytes": size,
+                        "valid": entry is not None, **(self.cache_meta(query) or {}),
+                        "created_ts": entry.get("created_ts") if entry else None,
+                        "expires_ts": entry.get("expires_ts") if entry else None,
+                        "scan_id": entry.get("scan_id") if entry else None,
+                        "scanning": self.is_scanning(query)})
+        return out
+
+    def reload(self) -> None:
+        """Forget what was read from the cache files; the next access re-reads them."""
+        for slot in self._slots.values():
+            slot.entry = slot.mtime = None
+
+    def set_ttl(self, seconds: int) -> None:
+        """New lifetime for caches written from now on (existing files keep their expiry)."""
+        self.ttl_seconds = seconds
+        for slot in self._slots.values():
+            slot.cache.ttl_seconds = seconds
 
     def clear(self, query: Optional[ScanQuery] = None) -> None:
         paths = [self._slot(query).cache.path] if query else list(self.data_dir.glob("scan_*.json"))

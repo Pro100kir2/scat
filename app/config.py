@@ -19,6 +19,10 @@ MAX_NODES = int(os.getenv("MAX_NODES", "30000"))
 SOURCE_CONCURRENCY = int(os.getenv("SOURCE_CONCURRENCY", "20"))
 # Source lists are several MB; they need far more time than a single node check.
 SOURCE_TIMEOUT = float(os.getenv("SOURCE_TIMEOUT", "45"))
+# Sources are admin-configurable URLs: a response larger than this is refused, and at most
+# this many redirects are followed (each one re-checked against the SSRF policy).
+SOURCE_MAX_BYTES = int(os.getenv("SOURCE_MAX_BYTES", str(32 * 1024 * 1024)))
+SOURCE_MAX_REDIRECTS = int(os.getenv("SOURCE_MAX_REDIRECTS", "3"))
 PORT_START = int(os.getenv("PORT_START", "20000"))
 BATCH_SIZE = int(os.getenv("BATCH_SIZE", "500"))  # nodes per Xray process
 WORKERS = int(os.getenv("WORKERS", "300"))  # concurrent qualification checks
@@ -66,6 +70,9 @@ ALLOWED_ORIGIN_REGEX = os.getenv("ALLOWED_ORIGIN_REGEX") or None
 
 # Required for /api/admin/*; admin endpoints are disabled while it is empty.
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "")
+# Browser sessions of the admin panel (the token is exchanged once for an HttpOnly cookie).
+ADMIN_SESSION_TTL_SECONDS = int(os.getenv("ADMIN_SESSION_TTL_SECONDS", str(12 * 60 * 60)))
+ADMIN_SESSION_IDLE_SECONDS = int(os.getenv("ADMIN_SESSION_IDLE_SECONDS", str(2 * 60 * 60)))
 
 # Requests that may start a scan, per client IP per minute.
 SCAN_RATE_LIMIT_PER_MINUTE = int(os.getenv("SCAN_RATE_LIMIT_PER_MINUTE", "6"))
@@ -79,14 +86,25 @@ TRUST_PROXY_HEADERS = _env_bool("TRUST_PROXY_HEADERS", False)
 # --- Provider probes -----------------------------------------------------------
 # Probes are small agents on volunteers' devices inside ISP networks. They only test
 # whether a VPN endpoint is reachable from that network (TCP/TLS/HTTP), never VLESS.
+# Their confirmations re-rank the backend-verified configs (see RANKING_USE_PROBE_SCORE).
 PROBE_DB_PATH = Path(os.getenv("PROBE_DB_PATH", str(DATA_DIR / "probes.db")))
 # Public https origin of this API, used in install commands. Empty = taken from the request.
 PUBLIC_API_URL = os.getenv("PUBLIC_API_URL", "").strip().rstrip("/")
 # Where the prebuilt probe binaries and SHA256SUMS live (built into the backend image).
 PROBE_DIST_DIR = Path(os.getenv("PROBE_DIST_DIR", str(BASE_DIR / "probe" / "dist")))
 PROBE_INSTALLER = Path(os.getenv("PROBE_INSTALLER", str(BASE_DIR / "probe" / "install.sh")))
-# New probes stay "pending" (visible, but their results are ignored) until an admin approves them.
+# New probes stay "pending" (their results are ignored) until they pass automatic verification
+# (docs/PROBES.md). true skips verification entirely: only for closed deployments.
 PROBE_AUTO_APPROVE = _env_bool("PROBE_AUTO_APPROVE", False)
+# Verification: the probe must fetch a one-time URL on this API (the server sees the request
+# arrive) and report it. Empty = PUBLIC_API_URL.
+PROBE_VERIFY_URL = os.getenv("PROBE_VERIFY_URL", "").strip().rstrip("/")
+PROBE_VERIFY_TIMEOUT_SECONDS = int(os.getenv("PROBE_VERIFY_TIMEOUT_SECONDS", str(10 * 60)))
+PROBE_VERIFY_RETRY_SECONDS = int(os.getenv("PROBE_VERIFY_RETRY_SECONDS", str(30 * 60)))  # after a failure
+PROBE_VERIFY_MAX_ATTEMPTS = int(os.getenv("PROBE_VERIFY_MAX_ATTEMPTS", "3"))  # automatic ones; admins can always re-run
+# Approved probes get a hidden one-time URL among their jobs this often; answering SUCCESS
+# without the request ever arriving means the probe invents results. 0 disables spot checks.
+PROBE_SPOT_CHECK_SECONDS = int(os.getenv("PROBE_SPOT_CHECK_SECONDS", str(6 * 60 * 60)))
 
 PROBE_HEARTBEAT_SECONDS = int(os.getenv("PROBE_HEARTBEAT_SECONDS", "30"))
 PROBE_OFFLINE_AFTER_SECONDS = int(os.getenv("PROBE_OFFLINE_AFTER_SECONDS", "100"))  # ~3 missed heartbeats
@@ -101,3 +119,9 @@ PROBE_CREDENTIAL_MAX_AGE_SECONDS = int(os.getenv("PROBE_CREDENTIAL_MAX_AGE_SECON
 PROBE_CONTROL_URL = os.getenv("PROBE_CONTROL_URL", "https://www.gstatic.com/generate_204")
 PROBE_REQUESTS_PER_MINUTE = int(os.getenv("PROBE_REQUESTS_PER_MINUTE", "120"))  # per probe
 PROBE_ENROLLMENTS_PER_HOUR = int(os.getenv("PROBE_ENROLLMENTS_PER_HOUR", "10"))  # per client IP
+
+# --- Ranking ---------------------------------------------------------------------
+# The backend's Xray checks decide which configs work; among those, configs confirmed
+# reachable by more providers' probes rank first (docs/RANKING.md). false: probe
+# confirmations are shown but the order is the backend's alone.
+RANKING_USE_PROBE_SCORE = _env_bool("RANKING_USE_PROBE_SCORE", True)

@@ -87,6 +87,13 @@ const detailsId = computed(() => `pearl-details-${props.node.id}`)
               <span class="mono muted">{{ node.checks_passed }}/{{ node.checks_total }} проверок</span>
             </dd>
           </div>
+          <div v-if="node.probe_total">
+            <dt>Подтверждено провайдерами</dt>
+            <dd>
+              <span class="mono">{{ node.probe_score }}/{{ node.probe_total }}</span>
+              <span class="muted"> — зонды в сетях провайдеров дотянулись до сервера</span>
+            </dd>
+          </div>
           <div v-if="node.speed_mbps">
             <dt>Скорость загрузки</dt>
             <dd class="mono">{{ node.speed_mbps }} Мбит/с</dd>

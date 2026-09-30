@@ -7,10 +7,13 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app import config
+from app import config, events
+from app.admin import settings as runtime_settings
+from app.admin.api import APP_VERSION, public_router as admin_login_router, router as admin_router
 from app.api.routes import router as api_router
 from app.probes import service as probe_service_module
 from app.probes.api import MAX_BODY_BYTES, router as probes_router
+from app.services.scan_history import scan_history
 from app.services.scan_service import ALL, scan_service
 from app.services.scanner import ScanQuery
 
@@ -49,14 +52,22 @@ async def schedule_probe_round(query: ScanQuery, entry: dict) -> None:
     """A new full scan finished: its best configs get provider reachability checks.
     Only here; page loads and country searches never start probe work."""
     if query == ALL:
-        await probe_service_module.probe_service.schedule_scan(entry)
+        summary = await probe_service_module.probe_service.schedule_scan(entry)
+        scan_history.probe_round(entry.get("scan_id"), summary)
 
 
 scan_service.add_listener(schedule_probe_round)
+scan_service.history = scan_history
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    try:
+        runtime_settings.load()
+        scan_history.interrupted()
+        events.record("system", "startup", f"Backend {APP_VERSION} started")
+    except Exception:
+        logging.getLogger("skat").exception("startup bookkeeping failed")
     background = None
     probe_maintenance = asyncio.create_task(probe_service_module.probe_service.run_forever(), name="skat-probes")
     if config.AUTO_REFRESH:
@@ -78,21 +89,33 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Скат API",
     description="Finds working VLESS configurations and serves them from a 24-hour cache.",
-    version="3.0.0",
+    version=APP_VERSION,
     lifespan=lifespan,
 )
 
-# The browser app only reads public data, so no credentials are allowed cross-origin.
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=config.ALLOWED_ORIGINS,
-    allow_origin_regex=config.ALLOWED_ORIGIN_REGEX,
-    allow_credentials=False,
-    allow_methods=["GET", "POST"],
-    allow_headers=["Content-Type"],
-    max_age=600,
-)
+class PathScopedCORS:
+    """Public data is read cross-origin without credentials (and preview origins may match the
+    regex). The admin API alone allows credentials, for its session cookie, and only for the
+    exact ALLOWED_ORIGINS: never the regex, never "*". The cookie is additionally
+    SameSite=Strict, scoped to /api/admin, and honoured only with the X-Scat-Admin header
+    (app/admin/auth.py)."""
 
+    def __init__(self, app):
+        self.public = CORSMiddleware(
+            app, allow_origins=config.ALLOWED_ORIGINS, allow_origin_regex=config.ALLOWED_ORIGIN_REGEX,
+            allow_credentials=False, allow_methods=["GET", "POST"], allow_headers=["Content-Type"], max_age=600)
+        self.admin = CORSMiddleware(
+            app, allow_origins=config.ALLOWED_ORIGINS, allow_credentials=True,
+            allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"], allow_headers=["Content-Type", "X-Scat-Admin"],
+            max_age=600)
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and scope["path"].startswith("/api/admin"):
+            return await self.admin(scope, receive, send)
+        return await self.public(scope, receive, send)
+
+
+app.add_middleware(PathScopedCORS)
 
 
 # The API host (JSON, /docs) is not a page for people to land on from search: only the site is.
@@ -103,12 +126,17 @@ async def noindex(request, call_next):
     return response
 
 
-# Probe and provider endpoints accept small JSON only. Enforced before the body is read.
+# Probe, provider and admin endpoints accept small JSON only. Enforced before the body is read.
 @app.middleware("http")
 async def limit_body_size(request, call_next):
-    if request.method == "POST" and request.url.path.startswith(("/api/probes/", "/api/providers")):
+    path = request.url.path
+    if request.method in ("POST", "PUT", "PATCH") and path.startswith(("/api/probes/", "/api/providers", "/api/admin")):
         length = request.headers.get("content-length")
         if length is None:
+            # Admin actions often have no body at all (`curl -X POST .../approve`); a streamed
+            # body of unknown size is still refused.
+            if path.startswith("/api/admin") and "transfer-encoding" not in request.headers:
+                return await call_next(request)
             return JSONResponse({"detail": "Content-Length required"}, status_code=411)
         if not length.isdigit() or int(length) > MAX_BODY_BYTES:
             return JSONResponse({"detail": "Request body too large"}, status_code=413)
@@ -117,6 +145,8 @@ async def limit_body_size(request, call_next):
 
 app.include_router(api_router, prefix="/api")
 app.include_router(probes_router, prefix="/api")
+app.include_router(admin_login_router, prefix="/api")
+app.include_router(admin_router, prefix="/api")
 
 
 @app.get("/", include_in_schema=False)

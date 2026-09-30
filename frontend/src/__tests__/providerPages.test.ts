@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount, RouterLinkStub } from '@vue/test-utils'
-import type { EnrollmentStatus, ProvidersResponse } from '@/types/api'
+import type { EnrollmentStatus, ProvidersResponse, VerificationStatus } from '@/types/api'
 
 vi.mock('@/services/api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/services/api')>()
@@ -51,7 +51,15 @@ const created = {
 }
 
 const status = (over: Partial<EnrollmentStatus>): EnrollmentStatus => ({
-  enrollment_id: created.enrollment_id, state: 'waiting', expires_at: now + 86400, diagnostics: null, probe: null, ...over,
+  enrollment_id: created.enrollment_id, state: 'waiting', expires_at: now + 86400, diagnostics: null, probe: null,
+  verification: null, ...over,
+})
+
+const probe = { id: 'prb_1', provider: 'МТС', status: 'pending' as const, online: true, last_seen: now, region: null,
+                asn: null, platform: 'Linux x86_64', version: '1.0.0' }
+const verification = (over: Partial<VerificationStatus> = {}): VerificationStatus => ({
+  state: 'running', reason: null, finished_at: null, deadline: now + 600, attempts: 1, will_retry: false, online: true,
+  ...over,
 })
 
 const unsupportedDiag = {
@@ -143,7 +151,7 @@ describe('Add provider', () => {
     await w.find('input[name="asn"]').setValue('AS8359')
     await w.find('form').trigger('submit')
     await flushPromises()
-    expect(addProvider).toHaveBeenCalledWith({ name: 'МТС', country: 'RU', region: 'Москва', asn: 'AS8359', info: '' })
+    expect(addProvider).toHaveBeenCalledWith({ name: 'МТС', country: 'RU', region: 'Москва', asn: 'AS8359', info: '', contact_phone: '' })
     const methods = w.findAll('.method')
     expect(methods.map((m) => m.find('.method__title').text())).toEqual(['Интерактивная установка', 'Ручная установка'])
 
@@ -228,21 +236,57 @@ describe('Installation status', () => {
     w.unmount()
   })
 
-  it('successful installation: probe online, pending review explained, polling stops', async () => {
-    const probe = { id: 'prb_1', provider: 'МТС', status: 'pending' as const, online: true, last_seen: now, region: null,
-                    asn: null, platform: 'Linux x86_64', version: '1.0.0' }
+  it('registered: the probe is connecting, verification about to start', async () => {
+    const w = await statusFor(status({ state: 'registered', probe, verification: verification({ state: 'none', online: false }) }))
+    expect(w.find('.banner--wait').text()).toContain('Зонд зарегистрирован')
+    expect(w.find('.banner').text()).toContain('автоматическая проверка')
+    w.unmount()
+  })
+
+  it('verifying: online and checking, never a generic error', async () => {
+    const w = await statusFor(status({ state: 'verifying', probe, verification: verification() }))
+    const banner = w.find('.banner--wait').text()
+    expect(banner).toContain('Проверяем зонд')
+    expect(banner).toContain('Зонд на связи')
+    expect(w.find('.station.is-active .station__title').text()).toBe('Автоматическая проверка')
+    for (const raw of ['pending', 'verification_failed', 'Invalid status']) expect(banner).not.toContain(raw)
+    w.unmount()
+  })
+
+  it('verified: ready, taking part, polling stops', async () => {
     vi.useFakeTimers()
-    const w = await statusFor(status({ state: 'online', probe }))
-    expect(w.findAll('.station.is-done')).toHaveLength(4)
-    expect(w.find('.status__done').text()).toContain('Зонд на связи')
-    expect(w.find('.status__done').text()).toContain('после быстрой проверки')
+    const w = await statusFor(status({
+      state: 'verified', probe: { ...probe, status: 'approved' }, verification: verification({ state: 'passed' }),
+    }))
+    expect(w.findAll('.station.is-done')).toHaveLength(5)
+    expect(w.find('.banner--ok').text()).toContain('Зонд проверен')
+    expect(w.find('.banner--ok').text()).toContain('участвует в проверке VLESS')
     vi.advanceTimersByTime(120_000)
     expect(fetchEnrollment).toHaveBeenCalledTimes(1)
     w.unmount()
   })
 
-  it('registered probe that went offline', async () => {
-    const w = await statusFor(status({ state: 'offline' }))
+  it('verification failed: a reason and what to do in plain words, raw codes only in details', async () => {
+    const w = await statusFor(status({
+      state: 'verification_failed', probe,
+      verification: verification({ state: 'failed', reason: 'api_unreachable', will_retry: true }),
+    }))
+    const banner = w.find('.banner--fail')
+    expect(banner.text()).toContain('Проверка зонда не пройдена')
+    expect(banner.text()).toContain('Причина')
+    expect(banner.text()).toContain('не смог открыть проверочный адрес')
+    expect(banner.text()).toContain('Что делать')
+    expect(banner.text()).toContain('повторим проверку')
+    expect(banner.text()).not.toContain('api_unreachable')
+    expect(w.find('details.checks').text()).toContain('api_unreachable')
+    expect(w.find('.station.is-failed .station__title').text()).toBe('Автоматическая проверка')
+    w.unmount()
+  })
+
+  it('verified probe that went offline', async () => {
+    const w = await statusFor(status({
+      state: 'verified', probe: { ...probe, status: 'approved' }, verification: verification({ state: 'passed', online: false }),
+    }))
     expect(w.find('.station.is-failed').text()).toContain('сейчас не на связи')
     w.unmount()
   })

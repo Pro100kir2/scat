@@ -39,4 +39,7 @@ def public_node(node: dict, rank: int) -> dict:
         "stable": bool(node.get("stable")),
         "checks_passed": len(samples),
         "checks_total": max(node.get("attempts") or 0, len(samples)),
+        # Providers whose probes confirmed this endpoint reachable, of those that checked it.
+        "probe_score": node.get("probe_score", 0),
+        "probe_total": node.get("probe_total", 0),
     }

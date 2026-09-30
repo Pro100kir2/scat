@@ -11,6 +11,9 @@ import { createAppRouter } from './router'
 // Production builds ship every page prerendered (scripts/prerender.mjs), so crawlers and slow
 // connections see real content before JavaScript runs; hydrate it. The dev server sends an empty shell.
 const root = document.getElementById('app')!
+// The admin panel is never prerendered with content: render it fresh instead of hydrating.
+const isAdmin = window.location.pathname.startsWith('/admin')
+if (isAdmin) root.replaceChildren()
 const app = root.hasChildNodes() ? createSSRApp(App) : createApp(App)
 const router = createAppRouter(createWebHistory())
 app.use(router)

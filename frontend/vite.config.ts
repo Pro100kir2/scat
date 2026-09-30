@@ -2,6 +2,7 @@
 import { fileURLToPath, URL } from 'node:url'
 import { defineConfig, loadEnv, type HtmlTagDescriptor, type Plugin } from 'vite'
 import vue from '@vitejs/plugin-vue'
+import pkg from './package.json' with { type: 'json' }
 import { FAQ } from './src/content/faq.ts'
 import { PAGES } from './src/content/pages.ts'
 
@@ -86,7 +87,7 @@ function siteMeta(env: Record<string, string>): Plugin {
       return { html: html.replaceAll('content="/og.png"', `content="${url('/og.png')}"`), tags }
     },
     generateBundle() {
-      const robots = ['User-agent: *', 'Allow: /', ...(base ? ['', `Sitemap: ${url('/sitemap.xml')}`] : [])]
+      const robots = ['User-agent: *', 'Allow: /', 'Disallow: /admin/', ...(base ? ['', `Sitemap: ${url('/sitemap.xml')}`] : [])]
       this.emitFile({ type: 'asset', fileName: 'robots.txt', source: `${robots.join('\n')}\n` })
       if (!base) return
       const lastmod = new Date().toISOString().slice(0, 10)
@@ -111,6 +112,8 @@ export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), 'VITE_')
   return {
     plugins: [vue(), siteMeta(env)],
+    // Shown on the admin System page next to the backend's version.
+    define: { __APP_VERSION__: JSON.stringify(pkg.version) },
     resolve: {
       alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) },
     },

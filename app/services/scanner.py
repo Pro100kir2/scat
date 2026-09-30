@@ -2,6 +2,7 @@ import asyncio
 import base64
 import binascii
 import hashlib
+import ipaddress
 import json
 import logging
 import os
@@ -9,7 +10,6 @@ import platform
 import re
 import shutil
 import signal
-import ssl
 import sys
 import tempfile
 import time
@@ -23,11 +23,11 @@ from statistics import median, pstdev
 from typing import Optional, Dict, Any, List
 from urllib.parse import parse_qs, quote, unquote, urlencode, urlsplit
 
-import aiohttp
-import certifi
 
 from app import config
+from app.probes.targets import is_public_ip
 from app.services import probes
+from app.services import sources as sources_registry
 
 DEBUG = os.getenv("DEBUG", "false").lower() in ("true", "1", "yes")
 logger = logging.getLogger("skat.scanner")
@@ -88,8 +88,13 @@ class VLESSNode:
 class SourceResult:
     url: str
     success: bool
-    vless_count: int = 0
+    vless_count: int = 0  # links extracted from the source
     error: str = ""
+    id: Optional[int] = None
+    name: str = ""
+    valid_count: int = 0  # links that parse into a config Xray can test
+    unique_count: int = 0  # of those, not already seen in an earlier source
+    cached: bool = False  # reused from the last download (the source's refresh interval)
 
 
 # ============================================================
@@ -684,82 +689,20 @@ class VLESSScannerManager:
         raise RuntimeError("Xray binary is missing and auto-download failed.")
 
     def read_sources(self) -> List[str]:
-        path = Path(config.CONFIG_FILE)
-        if not path.exists():
-            return []
-        sources = []
-        for line_number, raw_line in enumerate(
-            path.read_text(encoding="utf-8", errors="ignore").splitlines(), 1
-        ):
-            line = raw_line.strip()
-            if not line or line.startswith("#"):
-                continue
-            if " #" in line:
-                line = line.split(" #", 1)[0].strip()
-            # Accept both remote URLs and direct VLESS links
-            if not line or not (line.startswith("http://") or line.startswith("https://") or line.startswith("vless://")):
-                continue
-            sources.append(line)
-        return list(dict.fromkeys(sources))
+        """Enabled sources in priority order (app/services/sources.py; config.txt is imported once)."""
+        return [spec.url for spec in sources_registry.enabled_specs()]
 
-    async def _download_source(
-        self,
-        session: aiohttp.ClientSession,
-        url: str,
-    ) -> tuple[str, SourceResult]:
-        try:
-            timeout = aiohttp.ClientTimeout(
-                total=config.SOURCE_TIMEOUT,
-                connect=min(config.SOURCE_TIMEOUT, 10),
-                sock_read=config.SOURCE_TIMEOUT,
-            )
-            async with session.get(
-                url,
-                timeout=timeout,
-                allow_redirects=True,
-                headers={
-                    "User-Agent": "Mozilla/5.0 VLESS-Scanner/2.0",
-                    "Accept": "*/*",
-                },
-            ) as response:
-                if not 200 <= response.status < 300:
-                    return "", SourceResult(url, False, error=f"HTTP {response.status}")
-                body = await response.text(errors="ignore")
-                return body, SourceResult(url, True)
-        except asyncio.TimeoutError:
-            return "", SourceResult(url, False, error="timeout")
-        except Exception as exc:
-            return "", SourceResult(url, False, error=f"{type(exc).__name__}: {exc}")
+    async def _download_all_sources(self, specs: list) -> tuple[list[tuple[object, str]], list[SourceResult]]:
+        """Fetch every remote source through the SSRF-safe fetcher, SOURCE_CONCURRENCY at a time."""
 
-    async def _download_all_sources(
-        self, sources: List[str]
-    ) -> tuple[list[tuple[str, str]], list[SourceResult]]:
-        ssl_context = ssl.create_default_context(cafile=certifi.where())
-        connector = aiohttp.TCPConnector(
-            limit=config.SOURCE_CONCURRENCY * 2,
-            limit_per_host=config.SOURCE_CONCURRENCY,
-            ttl_dns_cache=300,
-            ssl=ssl_context,
-        )
-        timeout = aiohttp.ClientTimeout(total=config.SOURCE_TIMEOUT)
+        async def one(spec):
+            text, fetched, cached = await sources_registry.fetch_body(spec)
+            return spec, text, SourceResult(spec.url, fetched.ok, error=fetched.error, id=spec.id, name=spec.name,
+                                            cached=cached)
 
-        async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
-            sem = asyncio.Semaphore(config.SOURCE_CONCURRENCY)
-
-            async def worker(url: str):
-                async with sem:
-                    body, result = await self._download_source(session, url)
-                    return url, body, result
-
-            results = await asyncio.gather(*(worker(url) for url in sources))
-
-        bodies = []
-        source_results = []
-        for url, body, result in results:
-            source_results.append(result)
-            if result.success:
-                bodies.append((url, body))
-        return bodies, source_results
+        results = await sources_registry.gather_limited([one(spec) for spec in specs], config.SOURCE_CONCURRENCY)
+        bodies = [(spec, text) for spec, text, result in results if result.success]
+        return bodies, [result for _, _, result in results]
 
     @staticmethod
     async def _xray_accepts(xray_binary: str, nodes: list[VLESSNode]) -> tuple[bool, str]:
@@ -959,6 +902,9 @@ class VLESSScannerManager:
             self.started_at = time.time()
             try:
                 return await self._pipeline(query)
+            except asyncio.CancelledError:
+                self.stage = "cancelled"
+                raise
             except ScanFailed:
                 self.stage = "failed"
                 raise
@@ -970,36 +916,40 @@ class VLESSScannerManager:
                 self.query = None
 
     async def _collect(self) -> tuple[list[VLESSNode], list[SourceResult]]:
-        """Download every source and return unique, Xray-compatible nodes."""
-        sources = self.read_sources()
-        if not sources:
+        """Download every enabled source and return unique, Xray-compatible nodes."""
+        specs = sources_registry.enabled_specs()
+        if not specs:
             raise ScanFailed("no sources configured")
-        direct = [s for s in sources if s.startswith("vless://")]
-        downloaded, source_results = await self._download_all_sources([s for s in sources if s not in direct])
-        source_results += [SourceResult(link, True, 1) for link in direct]
+        direct = [s for s in specs if s.kind == "vless"]
+        downloaded, source_results = await self._download_all_sources([s for s in specs if s.kind != "vless"])
+        source_results += [SourceResult(s.url, True, 1, id=s.id, name=s.name) for s in direct]
 
         self.stage = "parsing"
-        per_source: list[list[str]] = [direct] + [extract_source_nodes(body) for _, body in downloaded]
-        counts = {url: len(urls) for (url, _), urls in zip(downloaded, per_source[1:])}
-        for result in source_results:
-            result.vless_count = counts.get(result.url, result.vless_count)
+        by_id = {r.id: r for r in source_results}
+        per_source: list[tuple[SourceResult, list[str]]] = [(by_id[s.id], [s.url]) for s in direct]
+        per_source += [(by_id[spec.id], extract_source_nodes(body)) for spec, body in downloaded]
 
         seen: set[str] = set()
         nodes: list[VLESSNode] = []
-        for index, urls in enumerate(per_source):
+        for index, (source, urls) in enumerate(per_source):
+            source.vless_count = len(urls)
             for url in urls:
-                try:
-                    node = parse_vless(url)
-                except Exception:
+                node = usable_node(url)
+                if node is None:
                     continue
-                if not link_matches_tested_config(node):
-                    logger.warning("Skipping %s:%s: its share link would not reproduce the tested config",
-                                   node.address, node.port)
-                    continue
+                source.valid_count += 1
                 if node.fingerprint not in seen:
                     seen.add(node.fingerprint)
+                    source.unique_count += 1
                     node.source_index = index
                     nodes.append(node)
+        for result in source_results:
+            if result.id is not None:
+                sources_registry.record(result.id, ok=result.success, error=result.error,
+                                        fetched=result.vless_count if result.success else None,
+                                        valid=result.valid_count if result.success else None,
+                                        unique=result.unique_count if result.success else None,
+                                        cached=result.cached)
         return nodes[: config.MAX_NODES], source_results
 
     async def _pipeline(self, query: ScanQuery) -> dict:
@@ -1060,6 +1010,30 @@ class VLESSScannerManager:
             "elapsed_seconds": round(time.time() - self.started_at, 1)
             if self.started_at and self.lock.locked() else None,
         }
+
+
+def usable_node(url: str) -> Optional[VLESSNode]:
+    """A link that parses, round-trips, and does not point Xray at a private address.
+
+    Lists come from anyone: a node at 127.0.0.1 or 10.x would make the backend's own Xray
+    open connections into the host or the Docker network, so literal non-public addresses
+    are dropped here (host names are resolved by Xray; see docs/SECURITY.md)."""
+    try:
+        node = parse_vless(url)
+    except Exception:
+        return None
+    if not link_matches_tested_config(node):
+        logger.warning("Skipping %s:%s: its share link would not reproduce the tested config", node.address, node.port)
+        return None
+    try:
+        ipaddress.ip_address(node.address.strip("[]"))
+    except ValueError:
+        if node.address.lower() in ("localhost", "localhost.localdomain") or node.address.lower().endswith(".localhost"):
+            return None
+    else:
+        if not is_public_ip(node.address.strip("[]")):
+            return None
+    return node
 
 
 def node_result(node: VLESSNode) -> dict:

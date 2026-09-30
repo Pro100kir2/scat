@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url'
 const dist = fileURLToPath(new URL('../dist/', import.meta.url))
 const serverDir = fileURLToPath(new URL('../dist-server/', import.meta.url))
 
-const { render, PAGES } = await import(new URL('entry-server.js', `file://${serverDir}`).href)
+const { render, PAGES, ADMIN_PAGE } = await import(new URL('entry-server.js', `file://${serverDir}`).href)
 
 const MOUNT = '<div id="app"></div>'
 const template = await readFile(`${dist}index.html`, 'utf8')
@@ -66,6 +66,14 @@ for (const page of Object.values(PAGES)) {
   await writeFile(`${dir}index.html`, html)
   total += appHtml.length
   console.log(`prerender: ${page.path} → dist${page.path}index.html (${(appHtml.length / 1024).toFixed(1)} kB)`)
+}
+
+// The admin panel: an empty shell (it renders in the browser after sign-in), never indexed.
+{
+  const html = headFor(ADMIN_PAGE).replace(/(<meta\s+name="robots"[^>]*?content=")[^"]*(")/, '$1noindex, nofollow$2')
+  await mkdir(`${dist}admin`, { recursive: true })
+  await writeFile(`${dist}admin/index.html`, html)
+  console.log('prerender: /admin/ → dist/admin/index.html (shell)')
 }
 
 await rm(serverDir, { recursive: true, force: true })

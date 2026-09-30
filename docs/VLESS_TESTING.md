@@ -295,6 +295,11 @@ top           = sorted(filter(is_usable, candidates), key=rank_score)[:TOP_COUNT
 `8000 / speed_mbps` is the time in ms to fetch 1 MB at the measured speed. Each failed latency attempt
 raises the latency weight by 40 %. Lower is better.
 
+This is the *backend* order, cached with the scan. What the API serves is re-ranked on every
+request: the usable candidates ordered by how many providers' probes confirmed their endpoint
+reachable, then by this order ([RANKING.md](RANKING.md)). With no probe results, the two are
+identical.
+
 ### 3.5 Guarantee that the user's link is the tested config
 
 1. `node.link` is built from the same node fields that `build_outbound` uses (§5.1).

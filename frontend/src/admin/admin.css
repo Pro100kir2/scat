@@ -1,0 +1,517 @@
+/* Скат Admin. Built on the site's tokens, buttons, inputs and dialogs (styles/main.css);
+   only the admin's own layout pieces live here. Loaded with the admin chunk only. */
+
+.admin {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  min-height: 100svh;
+  background: var(--abyss);
+}
+
+.admin__side {
+  position: sticky;
+  top: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  height: 100svh;
+  padding: 20px 14px;
+  border-right: 1px solid var(--line);
+  background: var(--deep);
+}
+
+.admin__brand {
+  margin: 0 8px 18px;
+  font-family: var(--font-display);
+  font-size: 24px;
+  color: var(--pearl);
+}
+
+.admin__nav a {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 38px;
+  padding: 0 12px;
+  border-radius: var(--radius-sm);
+  color: var(--text-2);
+  font-size: 14.5px;
+  font-weight: 500;
+  text-decoration: none;
+}
+
+.admin__nav a:hover {
+  background: rgba(168, 208, 222, 0.06);
+  color: var(--text);
+}
+
+/* Only the panel's own matcher decides (vue-router would mark Dashboard, the parent route, everywhere). */
+.admin__nav a.is-active {
+  background: var(--aqua-soft);
+  color: var(--text);
+}
+
+.admin__foot {
+  display: grid;
+  gap: 6px;
+  margin-top: auto;
+}
+
+.admin__main {
+  min-width: 0;
+  padding: 24px clamp(16px, 3vw, 36px) 64px;
+}
+
+.admin__top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.admin h1 {
+  font-family: var(--font-display);
+  font-size: clamp(28px, 3.2vw, 36px);
+  line-height: 1.1;
+}
+
+.admin h2 {
+  margin-bottom: 12px;
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.muted {
+  color: var(--text-3);
+}
+
+.dot {
+  display: inline-block;
+  min-width: 20px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--coral);
+  color: #1a0b07;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 20px;
+  text-align: center;
+}
+
+/* Cards and grids */
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 14px;
+}
+
+.card {
+  display: grid;
+  align-content: start;
+  gap: 6px;
+  padding: 16px 18px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--sea);
+}
+
+.card__label {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+.card__value {
+  font-size: 26px;
+  font-weight: 600;
+  line-height: 1.1;
+}
+
+.card__lines {
+  display: grid;
+  gap: 2px;
+  font-size: 14px;
+  color: var(--text-2);
+}
+
+.section {
+  margin-top: 28px;
+}
+
+.box {
+  padding: 16px 18px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--sea);
+}
+
+/* Toolbars and filters */
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.toolbar label {
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.toolbar .input {
+  min-height: 38px;
+  width: auto;
+  min-width: 130px;
+  padding-block: 6px;
+  font-size: 14px;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.btn--danger {
+  --btn-border: rgba(236, 154, 134, 0.5);
+  --btn-fg: var(--coral);
+}
+
+.btn--danger:hover {
+  --btn-bg: var(--coral-soft);
+  --btn-border: var(--coral);
+}
+
+/* Tables: scroll inside their frame, never the page */
+.table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--sea);
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13.5px;
+}
+
+.table th,
+.table td {
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+  white-space: nowrap;
+}
+
+.table th {
+  position: sticky;
+  top: 0;
+  background: var(--sea-2);
+  color: var(--text-3);
+  font-weight: 600;
+  font-size: 12px;
+}
+
+.table th button {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.table tbody tr:hover {
+  background: rgba(168, 208, 222, 0.04);
+}
+
+.table td.wrap {
+  white-space: normal;
+  min-width: 220px;
+}
+
+.table a {
+  color: var(--aqua);
+  text-decoration: none;
+}
+
+.table a:hover {
+  text-decoration: underline;
+}
+
+.row--new {
+  box-shadow: inset 3px 0 0 var(--coral);
+}
+
+/* Badges */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 9px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.badge--ok { border-color: rgba(143, 214, 207, 0.4); background: var(--aqua-soft); color: var(--aqua); }
+.badge--warn { border-color: rgba(223, 193, 137, 0.4); background: rgba(223, 193, 137, 0.1); color: var(--sand); }
+.badge--bad { border-color: rgba(236, 154, 134, 0.45); background: var(--coral-soft); color: var(--coral); }
+.badge--info { border-color: rgba(168, 208, 222, 0.3); color: var(--text-2); }
+.badge--muted { border-color: var(--line); color: var(--text-3); }
+
+/* Definition lists */
+.facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 12px 20px;
+  margin: 0;
+}
+
+.facts dt {
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.facts dd {
+  margin: 2px 0 0;
+  overflow-wrap: anywhere;
+}
+
+/* States */
+.state {
+  padding: 28px;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius);
+  color: var(--text-2);
+  text-align: center;
+}
+
+.state--error {
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+  border-color: rgba(236, 154, 134, 0.4);
+  color: var(--coral);
+}
+
+.pager {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 12px;
+  font-size: 14px;
+}
+
+/* Toasts */
+.toasts {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 50;
+  display: grid;
+  gap: 10px;
+  width: min(360px, calc(100vw - 32px));
+}
+
+.toast {
+  display: grid;
+  gap: 2px;
+  padding: 12px 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--sea-2);
+  box-shadow: 0 20px 60px -20px rgba(0, 0, 0, 0.8);
+  font-size: 14px;
+}
+
+.toast--ok { border-color: rgba(143, 214, 207, 0.5); }
+.toast--warn { border-color: rgba(223, 193, 137, 0.5); }
+.toast--bad { border-color: rgba(236, 154, 134, 0.6); }
+
+.toast__title {
+  font-weight: 600;
+}
+
+.toast__head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.toast__close {
+  padding: 0 4px;
+  border: 0;
+  background: none;
+  color: var(--text-3);
+  cursor: pointer;
+}
+
+.toast a {
+  color: var(--aqua);
+}
+
+/* Dialog */
+.confirm {
+  width: min(440px, calc(100vw - 32px));
+  padding: 24px;
+}
+
+.confirm__title {
+  margin-bottom: 10px;
+  font-size: 20px;
+}
+
+.confirm__body {
+  color: var(--text-2);
+  white-space: pre-line;
+}
+
+.confirm__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 22px;
+}
+
+/* Health */
+.health {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 20px;
+  border-radius: var(--radius);
+  font-size: 20px;
+  font-weight: 600;
+}
+
+.health--ok { background: var(--aqua-soft); color: var(--aqua); }
+.health--warning { background: rgba(223, 193, 137, 0.1); color: var(--sand); }
+.health--error { background: var(--coral-soft); color: var(--coral); }
+
+.bar {
+  height: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--sea-3);
+}
+
+.bar > span {
+  display: block;
+  height: 100%;
+  background: var(--aqua);
+  transition: width 0.4s var(--ease-out);
+}
+
+.login {
+  display: grid;
+  place-items: center;
+  min-height: 100svh;
+  padding: 16px;
+}
+
+.login form {
+  display: grid;
+  gap: 14px;
+  width: min(380px, 100%);
+  padding: 28px;
+  border: 1px solid var(--line);
+  border-radius: 22px;
+  background: var(--sea);
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 12px 16px;
+}
+
+.form-grid label,
+.stack label {
+  display: grid;
+  gap: 4px;
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+.form-grid .wide {
+  grid-column: 1 / -1;
+}
+
+.stack {
+  display: grid;
+  gap: 12px;
+}
+
+.error-text {
+  color: var(--coral);
+  font-size: 14px;
+}
+
+.menu-toggle {
+  display: none;
+}
+
+@media (max-width: 860px) {
+  .admin {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto 1fr;
+  }
+
+  .admin__side {
+    position: static;
+    height: auto;
+    padding: 12px 16px;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .admin__brand {
+    margin: 0;
+  }
+
+  .menu-toggle {
+    display: inline-flex;
+  }
+
+  .admin__side:not(.is-open) .admin__nav,
+  .admin__side:not(.is-open) .admin__foot {
+    display: none;
+  }
+
+  .admin__head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .admin__main {
+    padding: 18px 16px 48px;
+  }
+}
+
+/* Row actions stay on one line; the table frame scrolls instead of rows growing tall. */
+.table td .actions {
+  flex-wrap: nowrap;
+  gap: 4px;
+}
+
+.table td .btn--sm {
+  min-height: 30px;
+  padding: 0 10px;
+  font-size: 13px;
+}

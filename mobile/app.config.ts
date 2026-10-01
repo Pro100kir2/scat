@@ -14,7 +14,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   ...config,
   name: 'Скат',
   slug: 'scat',
-  version: '1.0.0',
+  version: '1.0.1',
   orientation: 'portrait',
   icon: './assets/icon.png',
   // Opens the app from scat:// links (and gives Expo Router its linking prefix).
@@ -32,6 +32,8 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   },
   android: {
     package: ANDROID_PACKAGE,
+    // Must grow with every Play upload: 1 was 1.0.0.
+    versionCode: 2,
     adaptiveIcon: {
       backgroundColor: '#0a2030',
       foregroundImage: './assets/android-icon-foreground.png',

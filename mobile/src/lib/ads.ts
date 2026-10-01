@@ -1,26 +1,62 @@
-import { adsSupported, adUnits } from '@/config/admob'
+import { useSyncExternalStore } from 'react'
+import type { ScanState } from '@scat/shared'
+import { adsSupported } from '@/config/admob'
+import { adsSdk } from './adsSdk'
 
+let ready = false
+const listeners = new Set<() => void>()
 let started: Promise<void> | undefined
 
+const subscribe = (fn: () => void) => {
+  listeners.add(fn)
+  return () => {
+    listeners.delete(fn)
+  }
+}
+
+/** True once the user's consent allows ad requests and the SDK has started. */
+export const useAdsReady = () => useSyncExternalStore(subscribe, () => ready, () => false)
+export const adsAreReady = () => ready
+
+const log = (message: string) => {
+  if (__DEV__) console.log(`[Скат] ads: ${message}`)
+}
+
 /**
- * Starts the Google Mobile Ads SDK once (Android only). It only initializes the SDK: no ad is
- * requested or shown anywhere yet. The native module is required lazily so platforms without it
- * (iOS, tests) never load it.
+ * Consent first (Google's UMP: the form appears only where the law requires it and only if a
+ * message is set up in AdMob), then the SDK. Nothing requests an ad before this resolves with
+ * `adsAreReady()`. Android only; runs once. Ads must never break the app.
  */
 export function initializeAds(): Promise<void> {
-  if (!adsSupported) return Promise.resolve()
+  if (!adsSupported()) return Promise.resolve()
   started ??= (async () => {
     try {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const mobileAds = require('react-native-google-mobile-ads').default
-      const statuses: { name: string; state: number }[] = Object.entries(await mobileAds().initialize()).map(
-        ([name, s]) => ({ name, state: (s as { state: number }).state }),
-      )
-      if (__DEV__) console.log(`[Скат] ads: SDK initialized (test units ${adUnits.banner}); adapters ${statuses.length}`)
+      const { default: mobileAds, AdsConsent } = adsSdk()
+      let canRequestAds: boolean
+      try {
+        canRequestAds = (await AdsConsent.gatherConsent()).canRequestAds
+      } catch (err) {
+        // Offline or the consent service failed: fall back to what the user decided before.
+        log(`consent update failed (${String(err)}), using the stored choice`)
+        canRequestAds = (await AdsConsent.getConsentInfo()).canRequestAds
+      }
+      if (!canRequestAds) {
+        log('consent does not allow ad requests')
+        return
+      }
+      await mobileAds().initialize()
+      ready = true
+      listeners.forEach((fn) => fn())
+      log('SDK initialized')
     } catch (err) {
-      // Ads must never break the app.
-      if (__DEV__) console.warn(`[Скат] ads: SDK initialization failed: ${String(err)}`)
+      log(`SDK initialization failed: ${String(err)}`)
     }
   })()
   return started
+}
+
+/** The native ad belongs to a live scan only; a replay of the cached catch lasts seconds. */
+export function showsWaitingAd(state: ScanState): boolean {
+  // `diveKind` still holds the previous dive until the server has answered, so a running scan is required too.
+  return state.journey === 'diving' && state.diveKind === 'live' && !!state.status?.is_scanning
 }

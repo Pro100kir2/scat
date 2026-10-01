@@ -1,0 +1,15 @@
+{
+  "_comment": "Single source of truth for AdMob IDs (read by app.config.ts, plugins/withAdMobAppId.js and src/config/admob.ts). 'test' = Google's official sample IDs, https://developers.google.com/admob/android/test-ads. These IDs are public identifiers, not secrets. Android only: no iOS IDs exist yet.",
+  "production": {
+    "androidAppId": "ca-app-pub-9243108413661209~7454822256",
+    "banner": "ca-app-pub-9243108413661209/3239321635",
+    "native": "ca-app-pub-9243108413661209/5482341595",
+    "appOpen": "ca-app-pub-9243108413661209/5346610228"
+  },
+  "test": {
+    "androidAppId": "ca-app-pub-3940256099942544~3347511713",
+    "banner": "ca-app-pub-3940256099942544/6300978111",
+    "native": "ca-app-pub-3940256099942544/2247696110",
+    "appOpen": "ca-app-pub-3940256099942544/9257395921"
+  }
+}

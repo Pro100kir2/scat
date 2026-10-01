@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vu
 import OceanScene from '@/components/ocean/OceanScene.vue'
 import AppIcon from '@/components/ui/AppIcon.vue'
 import DiveLog from './DiveLog.vue'
+import WaitingAd from './WaitingAd.vue'
 import { useScan } from '@/composables/useScan'
 import { useReducedMotion } from '@/composables/useReducedMotion'
 import { useSpotlight } from '@/composables/useSpotlight'
@@ -30,6 +31,9 @@ watch(sceneFound, (n) => {
 })
 
 const diving = computed(() => scan.journey.value === 'diving')
+// The ad belongs to a live scan only. `diveKind` is stale until the server has answered (a replay
+// right after a live scan would still read 'live'), so the server must also report a running scan.
+const showAd = computed(() => diving.value && scan.diveKind.value === 'live' && !!scan.status.value?.is_scanning)
 const catchCount = computed(() => scan.nodes.value.length)
 const showCounter = computed(() => scan.journey.value !== 'resting')
 
@@ -144,6 +148,8 @@ onBeforeUnmount(() => observer?.disconnect())
           </Transition>
           <DiveLog :revealed="revealed" />
         </div>
+
+        <WaitingAd v-if="showAd" />
       </div>
     </div>
 

@@ -7,6 +7,8 @@ import type { Rect } from '@scat/shared/ocean'
 import { Button } from '@/components/ui/Button'
 import { Icon, SkatMark } from '@/components/ui/Icon'
 import { Em, T } from '@/components/ui/T'
+import { WaitingNativeAd } from '@/components/ads/WaitingNativeAd'
+import { showsWaitingAd } from '@/lib/ads'
 import { scanStore } from '@/lib/scan'
 import { useCooldown } from '@/lib/useCooldown'
 import { useReducedMotion } from '@/lib/useReducedMotion'
@@ -141,6 +143,8 @@ export function Hero({ state, paused, onSeeCatch, onPearl, onHeight }: Props) {
           ) : null}
           <DiveLog state={state} revealed={revealed} />
         </View>
+
+        {showsWaitingAd(state) ? <WaitingNativeAd /> : null}
       </View>
     </View>
   )

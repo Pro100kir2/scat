@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 import { RefreshControl, ScrollView, StyleSheet, View, type ScrollViewProps } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
+import { BannerSlot } from '@/components/ads/BannerSlot'
 import { colors, gutter, maxContentWidth } from '@/theme'
 
 interface Props extends Pick<ScrollViewProps, 'keyboardShouldPersistTaps' | 'onScroll'> {
@@ -17,18 +18,21 @@ interface Props extends Pick<ScrollViewProps, 'keyboardShouldPersistTaps' | 'onS
 export function Screen({ children, onRefresh, refreshing = false, padTop = true, scrollRef, ...rest }: Props) {
   const insets = useSafeAreaInsets()
   return (
-    <ScrollView
-      ref={scrollRef}
-      style={styles.scroll}
-      contentContainerStyle={{ paddingTop: padTop ? insets.top + 12 : 0, paddingBottom: 32 }}
-      refreshControl={onRefresh
-        ? <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.aqua} colors={[colors.aqua]} progressBackgroundColor={colors.sea2} />
-        : undefined}
-      scrollEventThrottle={64}
-      {...rest}
-    >
-      {children}
-    </ScrollView>
+    <View style={styles.screen}>
+      <ScrollView
+        ref={scrollRef}
+        style={styles.scroll}
+        contentContainerStyle={{ paddingTop: padTop ? insets.top + 12 : 0, paddingBottom: 32 }}
+        refreshControl={onRefresh
+          ? <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.aqua} colors={[colors.aqua]} progressBackgroundColor={colors.sea2} />
+          : undefined}
+        scrollEventThrottle={64}
+        {...rest}
+      >
+        {children}
+      </ScrollView>
+      <BannerSlot />
+    </View>
   )
 }
 
@@ -38,6 +42,7 @@ export function Block({ children, gap = 14 }: { children: ReactNode; gap?: numbe
 }
 
 const styles = StyleSheet.create({
+  screen: { flex: 1, backgroundColor: colors.abyss },
   scroll: { flex: 1, backgroundColor: colors.abyss },
   block: { width: '100%', maxWidth: maxContentWidth, alignSelf: 'center', paddingHorizontal: gutter },
 })

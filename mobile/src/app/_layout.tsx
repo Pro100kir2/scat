@@ -10,6 +10,7 @@ import { Manrope_400Regular } from '@expo-google-fonts/manrope/400Regular'
 import { Manrope_500Medium } from '@expo-google-fonts/manrope/500Medium'
 import { Manrope_600SemiBold } from '@expo-google-fonts/manrope/600SemiBold'
 import { initializeAds } from '@/lib/ads'
+import { startAppOpenAds } from '@/lib/appOpenAd'
 import { useScanLifecycle } from '@/lib/scan'
 import { colors, fonts } from '@/theme'
 
@@ -31,14 +32,25 @@ export default function RootLayout() {
     CormorantGaramond_500Medium_Italic,
   })
   useScanLifecycle()
-  useEffect(() => {
-    void initializeAds()
-  }, [])
 
   // If a font fails to load the app still opens, in the system face.
   const ready = loaded || !!error
   useEffect(() => {
     if (ready) void SplashScreen.hideAsync()
+  }, [ready])
+
+  // Ads start only once the first screen is up: consent, then the SDK, then the app-open ad.
+  useEffect(() => {
+    if (!ready) return
+    let stop: (() => void) | undefined
+    let cancelled = false
+    void initializeAds().then(() => {
+      if (!cancelled) stop = startAppOpenAds()
+    })
+    return () => {
+      cancelled = true
+      stop?.()
+    }
   }, [ready])
   if (!ready) return null
 

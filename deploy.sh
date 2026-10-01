@@ -978,10 +978,16 @@ health_checks() {
   [[ "$page" == *'id="app"'* ]] || die "https://${DOMAIN}/ does not contain the app shell"
   asset="$(grep -oE '/assets/index-[A-Za-z0-9_-]+\.js' <<<"$page" | head -1 || true)"
   [[ -n "$asset" ]] || die "no JavaScript bundle referenced by index.html"
-  if ! lcurl -fsS --max-time 15 "https://${DOMAIN}${asset}" | grep -qF "https://${API_DOMAIN}"; then
-    local other; other="$(lcurl -fsS --max-time 15 "https://${DOMAIN}${asset}" | grep -oE 'https://api\.[A-Za-z0-9.-]+' | sort -u | xargs || true)"
+  # The API origin may sit in any chunk the page references (Vite splits the shared config out
+  # of the entry bundle), so every referenced script is searched, not only index-*.js.
+  local bundle="" script
+  while IFS= read -r script; do
+    bundle+="$(lcurl -fsS --max-time 15 "https://${DOMAIN}${script}" || true)"$'\n'
+  done < <(grep -oE '/assets/[A-Za-z0-9_.-]+\.js' <<<"$page" | sort -u)
+  if ! grep -qF "https://${API_DOMAIN}" <<<"$bundle"; then
+    local other; other="$(grep -oE 'https://api\.[A-Za-z0-9.-]+' <<<"$bundle" | sort -u | xargs || true)"
     [[ -z "$other" ]] || die "the deployed bundle calls ${other}, not https://${API_DOMAIN}. Fix VITE_API_URL in .env and rebuild."
-    warn "could not find https://${API_DOMAIN} in ${asset}; check the browser network tab once"
+    warn "could not find https://${API_DOMAIN} in the scripts of https://${DOMAIN}/; check the browser network tab once"
   fi
   # Each page is prerendered; anything else must be a real 404, not a soft-404 copy of the home page.
   code="$(http_code "https://${DOMAIN}/some/deep/link")"

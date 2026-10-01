@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { OceanEngine } from '@/ocean/engine'
-import type { Manta } from '@/ocean/manta'
-import type { Pearl } from '@/ocean/pearls'
+import type { Manta, Pearl } from '@scat/shared/ocean'
 
 /** A 2-D context that accepts every call and ignores it. */
 function fakeContext(): CanvasRenderingContext2D {
@@ -13,14 +12,13 @@ function fakeContext(): CanvasRenderingContext2D {
   return noop as CanvasRenderingContext2D
 }
 
-interface EngineInternals {
+/** The shared simulation behind the engine (its private parts included, for the tests). */
+interface SimInternals {
   manta: Manta
   plan: { kind: string; pearl?: Pearl }
   pearls: { pearls: Pearl[] }
   env: { size: { width: number; height: number } }
-  resize(): void
   update(dt: number): void
-  render(dt: number): void
 }
 
 let size = { width: 1440, height: 900 }
@@ -30,11 +28,12 @@ function createEngine(opts: Partial<ConstructorParameters<typeof OceanEngine>[1]
   const canvas = document.createElement('canvas')
   canvas.getBoundingClientRect = () => ({ ...size, x: 0, y: 0, left: 0, top: 0, right: size.width, bottom: size.height, toJSON: () => ({}) })
   const engine = new OceanEngine(canvas, { reducedMotion: false, onReveal: () => {}, onDrained: () => {}, ...opts })
-  return { engine, inner: engine as unknown as EngineInternals }
+  const render = () => (engine as unknown as { renderer: { render(): void } }).renderer.render()
+  return { engine, inner: engine.sim as unknown as SimInternals, render }
 }
 
 /** Every point of the drawn manta, not just its centre, must be on the canvas. */
-function expectInside(inner: EngineInternals) {
+function expectInside(inner: SimInternals) {
   const m = inner.manta
   const b = m.pose()
   const { width, height } = inner.env.size
@@ -144,11 +143,11 @@ describe('ocean manta', () => {
 
   it('renders every phase without throwing', () => {
     size = { width: 390, height: 844 }
-    const { engine, inner } = createEngine()
+    const { engine, inner, render } = createEngine()
     engine.discover(2)
     for (let i = 0; i < 60 * 12; i++) {
       inner.update(1 / 60)
-      inner.render(1 / 60)
+      render()
     }
     engine.destroy()
   })

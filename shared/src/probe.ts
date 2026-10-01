@@ -1,4 +1,4 @@
-import type { DiagnosticCheck, DiagnosticIssue, EnrollmentStatus } from '@/types/api'
+import type { DiagnosticCheck, DiagnosticIssue, EnrollmentStatus } from './types'
 
 /** Russian wording for the installer's failed requirements (the server's codes). */
 const REASONS: Record<string, string> = {

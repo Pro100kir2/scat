@@ -3,7 +3,7 @@ import { fileURLToPath, URL } from 'node:url'
 import { defineConfig, loadEnv, type HtmlTagDescriptor, type Plugin } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import pkg from './package.json' with { type: 'json' }
-import { FAQ } from './src/content/faq.ts'
+import { FAQ } from '../shared/src/content/faq.ts'
 import { PAGES } from './src/content/pages.ts'
 
 /**
@@ -108,6 +108,8 @@ function siteMeta(env: Record<string, string>): Plugin {
   }
 }
 
+const shared = fileURLToPath(new URL('../shared/src', import.meta.url))
+
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), 'VITE_')
   return {
@@ -115,11 +117,18 @@ export default defineConfig(({ mode }) => {
     // Shown on the admin System page next to the backend's version.
     define: { __APP_VERSION__: JSON.stringify(pkg.version) },
     resolve: {
-      alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) },
+      alias: [
+        { find: '@', replacement: fileURLToPath(new URL('./src', import.meta.url)) },
+        // Framework-independent logic shared with the mobile app (../shared).
+        { find: /^@scat\/shared$/, replacement: `${shared}/index.ts` },
+        { find: /^@scat\/shared\/(.*)$/, replacement: `${shared}/$1` },
+      ],
     },
     server: {
       // Local dev: same-origin /api calls go to the FastAPI server.
       proxy: { '/api': 'http://127.0.0.1:8000' },
+      // The shared package lives next to this project, outside Vite's root.
+      fs: { allow: ['.', shared] },
     },
     build: {
       target: 'es2022',

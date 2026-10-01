@@ -1,4 +1,5 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { cappedUntil, remainingSeconds } from '@scat/shared'
 import { storage } from '@/utils/storage'
 
 /**
@@ -6,15 +7,12 @@ import { storage } from '@/utils/storage'
  * `maxSeconds` caps whatever is stored, so a stale or edited value can't lock the button for long.
  */
 export function useCooldown(key: string, maxSeconds: number) {
-  const readUntil = () => {
-    const stored = Number(storage.get(key))
-    return Number.isFinite(stored) ? Math.min(stored, Date.now() + maxSeconds * 1000) : 0
-  }
+  const readUntil = () => cappedUntil(storage.get(key), maxSeconds)
 
   // Read on mount, not during setup: the prerendered page must match the first client render.
   const until = ref(0)
   const now = ref(Date.now())
-  const remaining = computed(() => Math.max(0, Math.ceil((until.value - now.value) / 1000)))
+  const remaining = computed(() => remainingSeconds(until.value, now.value))
   let timer: ReturnType<typeof setTimeout> | undefined
 
   function tick() {

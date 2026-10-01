@@ -51,15 +51,41 @@ export function formatCountdown(seconds: number): string {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
 }
 
-let regionNames: Intl.DisplayNames | null = null
+/** Russian names for runtimes without Intl.DisplayNames (React Native's Hermes). */
+const COUNTRY_NAMES: Record<string, string> = {
+  AE: 'ОАЭ', AL: 'Албания', AM: 'Армения', AR: 'Аргентина', AT: 'Австрия', AU: 'Австралия', AZ: 'Азербайджан',
+  BE: 'Бельгия', BG: 'Болгария', BR: 'Бразилия', BY: 'Беларусь', CA: 'Канада', CH: 'Швейцария', CL: 'Чили',
+  CN: 'Китай', CY: 'Кипр', CZ: 'Чехия', DE: 'Германия', DK: 'Дания', EE: 'Эстония', EG: 'Египет', ES: 'Испания',
+  FI: 'Финляндия', FR: 'Франция', GB: 'Великобритания', GE: 'Грузия', GR: 'Греция', HK: 'Гонконг', HR: 'Хорватия',
+  HU: 'Венгрия', ID: 'Индонезия', IE: 'Ирландия', IL: 'Израиль', IN: 'Индия', IR: 'Иран', IS: 'Исландия',
+  IT: 'Италия', JP: 'Япония', KG: 'Киргизия', KR: 'Южная Корея', KZ: 'Казахстан', LT: 'Литва', LU: 'Люксембург',
+  LV: 'Латвия', MD: 'Молдова', MX: 'Мексика', MY: 'Малайзия', NL: 'Нидерланды', NO: 'Норвегия', NZ: 'Новая Зеландия',
+  PH: 'Филиппины', PL: 'Польша', PT: 'Португалия', RO: 'Румыния', RS: 'Сербия', RU: 'Россия', SE: 'Швеция',
+  SG: 'Сингапур', SI: 'Словения', SK: 'Словакия', TH: 'Таиланд', TR: 'Турция', TW: 'Тайвань', UA: 'Украина',
+  US: 'США', UZ: 'Узбекистан', VN: 'Вьетнам', ZA: 'ЮАР',
+}
+
+/** Countries offered for a country search, most asked-for first. */
+export const SEARCH_COUNTRIES = ['DE', 'NL', 'FI', 'US', 'GB', 'FR', 'SE', 'PL', 'TR', 'KZ', 'JP', 'SG', 'CH', 'AT', 'ES', 'IT'] as const
+
+let regionNames: Intl.DisplayNames | null | undefined
 export function countryName(code: string | null): string | null {
   if (!code) return null
-  try {
-    regionNames ??= new Intl.DisplayNames(['ru'], { type: 'region' })
-    return regionNames.of(code) ?? code
-  } catch {
-    return code
+  const upper = code.toUpperCase()
+  if (regionNames === undefined) {
+    try {
+      regionNames = typeof Intl.DisplayNames === 'function' ? new Intl.DisplayNames(['ru'], { type: 'region' }) : null
+    } catch {
+      regionNames = null
+    }
   }
+  try {
+    const name = regionNames?.of(upper)
+    if (name && name !== upper) return name
+  } catch {
+    /* not a region code: fall through */
+  }
+  return COUNTRY_NAMES[upper] ?? code
 }
 
 export type Quality = 'excellent' | 'good' | 'fair' | 'slow'

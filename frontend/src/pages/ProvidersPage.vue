@@ -3,8 +3,8 @@ import { computed, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
 import StateNote from '@/components/results/StateNote.vue'
 import AppIcon from '@/components/ui/AppIcon.vue'
 import { fetchProviders } from '@/services/api'
-import type { ProvidersResponse } from '@/types/api'
-import { countryName, formatAgo, plural } from '@/utils/format'
+import type { ProvidersResponse } from '@scat/shared'
+import { countryName, formatAgo, plural } from '@scat/shared'
 
 /** Read-only overview. Loading it never starts any checks. */
 const REFRESH_MS = 30_000

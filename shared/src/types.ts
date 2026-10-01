@@ -63,6 +63,14 @@ export interface ResultsResponse extends ScanStatus {
   nodes: PearlNode[]
 }
 
+/** `GET /api/vless/search/{country}`: the same pipeline for one exit country. */
+export interface CountrySearchResponse extends ResultsResponse {
+  country: string
+  outcome?: ScanOutcome
+  /** false while the first search for this country is still queued or running (HTTP 202). */
+  ready: boolean
+}
+
 export interface ScanRequestResponse extends ScanStatus {
   outcome: ScanOutcome
 }

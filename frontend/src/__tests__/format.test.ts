@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { formatUntil, latencyQuality, plural, PEARLS_NOM } from '@/utils/format'
+import { formatUntil, latencyQuality, plural, PEARLS_NOM } from '@scat/shared'
 
 describe('plural', () => {
   it.each([

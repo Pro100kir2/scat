@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
 import { fetchEnrollment } from '@/services/api'
-import type { EnrollmentState, EnrollmentStatus } from '@/types/api'
-import { checkLabel, issueText, verificationView } from '@/utils/probe'
+import type { EnrollmentState, EnrollmentStatus } from '@scat/shared'
+import { checkLabel, issueText, verificationView } from '@scat/shared'
 
 /**
  * Live progress of an installation, from the website's side: the installer reports to the

@@ -4,8 +4,8 @@ import AppIcon from '@/components/ui/AppIcon.vue'
 import CommandBlock from '@/components/providers/CommandBlock.vue'
 import InstallStatus from '@/components/providers/InstallStatus.vue'
 import { ApiError, addProvider, fetchReleases } from '@/services/api'
-import type { EnrollmentCreated, ProbeRelease, ProviderForm } from '@/types/api'
-import { countryName } from '@/utils/format'
+import type { EnrollmentCreated, ProbeRelease, ProviderForm } from '@scat/shared'
+import { countryName } from '@scat/shared'
 
 type Step = 'form' | 'method' | 'interactive' | 'manual'
 

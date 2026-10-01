@@ -1,208 +1,59 @@
 import { computed, readonly, ref, shallowRef } from 'vue'
-import { ApiError, fetchResults, fetchStatus, requestRefresh, requestScan } from '@/services/api'
-import type { PearlNode, ScanRequestResponse, ScanStatus } from '@/types/api'
+import { createScanStore, scanCache, scanProgress, type DiveKind, type Journey, type ScanState } from '@scat/shared'
+import { fetchResults, fetchStatus, requestRefresh, requestScan } from '@/services/api'
+
+export type { DiveKind, Journey }
 
 /**
- * - `resting`   nothing is happening; results (if any) are on the page
- * - `diving`    the user started a search, or the server is scanning right now
- * - `surfaced`  a dive just finished; results are ready to look at
+ * The scan session for Vue: the shared state machine (@scat/shared `createScanStore`) mirrored
+ * into refs. One session for every component; the rules live in the shared package.
  */
-export type Journey = 'resting' | 'diving' | 'surfaced'
-/** What the dive shows: a live server scan, or a replay of today's cached catch. */
-export type DiveKind = 'live' | 'replay'
+const store = createScanStore({
+  // Looked up on every call, so tests can replace the API module.
+  api: {
+    fetchResults: (signal) => fetchResults(signal),
+    fetchStatus: (signal) => fetchStatus(signal),
+    requestScan: (signal) => requestScan(signal),
+    requestRefresh: (signal) => requestRefresh(signal),
+  },
+  isHidden: () => typeof document !== 'undefined' && document.hidden,
+})
 
-const POLL_MS = 1500
-const MAX_POLL_FAILURES = 4
+const initial = store.getState()
+const loading = ref(initial.loading)
+const nodes = shallowRef(initial.nodes)
+const status = shallowRef(initial.status)
+const loadError = shallowRef(initial.loadError)
+const scanError = shallowRef(initial.scanError)
+const cooldown = ref(initial.cooldown)
+const journey = ref<Journey>(initial.journey)
+const diveKind = ref<DiveKind>(initial.diveKind)
+const found = ref(initial.found)
+/** The whole state as one object, for the shared view functions (diveLogView, resultsPhase). */
+const state = shallowRef<ScanState>(initial)
 
-// Module-level state: one scan session shared by every component.
-const loading = ref(true)
-const nodes = shallowRef<PearlNode[]>([])
-const status = shallowRef<ScanStatus | null>(null)
-const loadError = shallowRef<ApiError | null>(null)
-const scanError = shallowRef<ApiError | null>(null)
-const cooldown = ref(false)
-const journey = ref<Journey>('resting')
-const diveKind = ref<DiveKind>('replay')
-/** Working configs found so far in this dive. The ocean scene turns increments into pearls. */
-const found = ref(0)
+store.subscribe(() => {
+  const s = store.getState()
+  state.value = s
+  loading.value = s.loading
+  nodes.value = s.nodes
+  status.value = s.status
+  loadError.value = s.loadError
+  scanError.value = s.scanError
+  cooldown.value = s.cooldown
+  journey.value = s.journey
+  diveKind.value = s.diveKind
+  found.value = s.found
+})
 
-let pollTimer: ReturnType<typeof setTimeout> | undefined
-let pollFailures = 0
-let controller: AbortController | null = null
-
-function logError(context: string, err: unknown) {
-  // User-facing copy stays friendly; developers get the details here.
-  console.error(`[Скат] ${context}`, err)
-}
-
-function asApiError(err: unknown): ApiError {
-  return err instanceof ApiError ? err : new ApiError('malformed', String(err))
-}
-
-function stopPolling() {
-  clearTimeout(pollTimer)
-  pollTimer = undefined
-}
-
-function schedulePoll() {
-  stopPolling()
-  pollTimer = setTimeout(poll, POLL_MS)
-}
-
-async function poll() {
-  if (document.hidden) return // resumed by the visibilitychange listener
-  try {
-    const next = await fetchStatus(controller?.signal)
-    pollFailures = 0
-    status.value = next
-    if (next.is_scanning) {
-      found.value = Math.max(found.value, next.progress?.working_candidates ?? 0)
-      schedulePoll()
-    } else {
-      await finishLiveDive(next)
-    }
-  } catch (err) {
-    const apiErr = asApiError(err)
-    if (apiErr.kind === 'aborted') return
-    pollFailures += 1
-    logError(`status poll failed (${pollFailures}/${MAX_POLL_FAILURES})`, apiErr)
-    if (pollFailures >= MAX_POLL_FAILURES) {
-      scanError.value = apiErr
-      journey.value = nodes.value.length ? 'surfaced' : 'resting'
-    } else {
-      schedulePoll()
-    }
-  }
-}
-
-async function finishLiveDive(last: ScanStatus) {
-  stopPolling()
-  await refreshResults()
-  if (last.last_scan_failed && !last.cache) {
-    scanError.value = new ApiError('server', 'Scan failed on the server')
-    journey.value = 'resting'
-    return
-  }
-  // `found` counts every working config; the catch keeps the best of them.
-  found.value = Math.max(found.value, nodes.value.length)
-  journey.value = 'surfaced'
-}
-
-async function refreshResults() {
-  try {
-    const data = await fetchResults(controller?.signal)
-    nodes.value = data.nodes
-    status.value = data
-    loadError.value = null
-  } catch (err) {
-    const apiErr = asApiError(err)
-    if (apiErr.kind === 'aborted') return
-    logError('loading results failed', apiErr)
-    loadError.value = apiErr
-  }
-}
-
-function beginLiveDive(current: ScanStatus) {
-  diveKind.value = 'live'
-  journey.value = 'diving'
-  found.value = current.progress?.working_candidates ?? 0
-  schedulePoll()
-}
-
-async function init() {
-  controller?.abort()
-  controller = new AbortController()
-  loading.value = true
-  await refreshResults()
-  loading.value = false
-  if (status.value?.is_scanning) beginLiveDive(status.value)
-}
-
-/**
- * Asks the server for a dive and plays it: live when a scan runs, a replay of the
- * cached catch otherwise. Request errors reset the journey and are rethrown.
- */
-async function dive<T extends ScanRequestResponse>(send: (signal?: AbortSignal) => Promise<T>): Promise<T | null> {
-  if (journey.value === 'diving') return null
-  scanError.value = null
-  cooldown.value = false
-  found.value = 0
-  journey.value = 'diving'
-
-  let res: T
-  try {
-    res = await send(controller?.signal)
-  } catch (err) {
-    const apiErr = asApiError(err)
-    if (apiErr.kind !== 'aborted') journey.value = nodes.value.length ? 'surfaced' : 'resting'
-    throw apiErr
-  }
-
-  status.value = res
-  if (res.outcome === 'started' || res.outcome === 'joined') {
-    beginLiveDive(res)
-    return res
-  }
-  if (res.outcome === 'cooldown') cooldown.value = true
-  if (!nodes.value.length) await refreshResults()
-  if (!nodes.value.length) {
-    journey.value = 'resting'
-    if (res.outcome === 'cooldown') scanError.value = new ApiError('server', 'Scanner cooling down')
-    return res
-  }
-  // Today's catch already exists: replay the dive, the scene reveals each pearl.
-  diveKind.value = 'replay'
-  found.value = nodes.value.length
-  return res
-}
-
-function reportScanError(err: unknown) {
-  const apiErr = asApiError(err)
-  if (apiErr.kind === 'aborted') return
-  logError('starting a search failed', apiErr)
-  scanError.value = apiErr
-}
-
-/** The main call to action. Never triggers more than the server allows. */
-async function startSearch() {
-  try {
-    await dive(requestScan)
-  } catch (err) {
-    reportScanError(err)
-  }
-}
-
-/**
- * Drops today's cached catch and dives for a fresh one.
- * Resolves to the seconds until the next refresh is allowed (0 when it can be retried now).
- */
-async function refreshCatch(): Promise<number> {
-  try {
-    const res = await dive(requestRefresh)
-    return res?.retry_after ?? 0
-  } catch (err) {
-    const apiErr = asApiError(err)
-    // Someone refreshed recently: the button's countdown explains it, no error needed.
-    if (apiErr.kind === 'rate_limit') return apiErr.retryAfter ?? 60
-    reportScanError(apiErr)
-    return 0
-  }
-}
-
-/** Called by the scene once the replay has shown every pearl. */
-function completeReplay() {
-  if (journey.value === 'diving' && diveKind.value === 'replay') journey.value = 'surfaced'
-}
-
-function onVisibilityChange() {
-  // poll() skips hidden tabs; pick the live dive back up as soon as the tab is visible.
-  if (!document.hidden && journey.value === 'diving' && diveKind.value === 'live') void poll()
-}
+const onVisibilityChange = () => store.resume()
 
 let mounted = 0
 
 export function useScan() {
   return {
+    /** Immutable snapshots: a new object on every change. */
+    state,
     loading: readonly(loading),
     nodes,
     status,
@@ -212,25 +63,24 @@ export function useScan() {
     journey: readonly(journey),
     diveKind: readonly(diveKind),
     found: readonly(found),
-    progress: computed(() => status.value?.progress ?? null),
-    cache: computed(() => status.value?.cache ?? null),
-    init,
-    startSearch,
-    refreshCatch,
-    completeReplay,
-    retry: init,
+    progress: computed(() => scanProgress(state.value)),
+    cache: computed(() => scanCache(state.value)),
+    init: store.init,
+    startSearch: store.startSearch,
+    refreshCatch: store.refreshCatch,
+    completeReplay: store.completeReplay,
+    retry: store.retry,
     /** Wire lifecycle once from the root component. */
     attach() {
       if (mounted++ === 0) {
         document.addEventListener('visibilitychange', onVisibilityChange)
-        void init()
+        void store.init()
       }
     },
     detach() {
       if (--mounted === 0) {
         document.removeEventListener('visibilitychange', onVisibilityChange)
-        stopPolling()
-        controller?.abort()
+        store.stop()
       }
     },
   }

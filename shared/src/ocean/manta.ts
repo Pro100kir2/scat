@@ -1,5 +1,6 @@
 /**
- * The manta: a small 3-D body model rendered with a 2-D canvas.
+ * The manta: a small 3-D body model, projected to 2-D points for a renderer to draw
+ * (Canvas 2D on the site, Skia in the app). No drawing here.
  *
  * The outline lives in local coordinates (f = forward, r = right, u = up, wingspan = 2).
  * Every frame each outline point is deformed by the wing stroke (a wave that travels
@@ -36,9 +37,9 @@ const HALF_OUTLINE: ReadonlyArray<readonly [number, number]> = [
   [-0.48, 0.04],
   [-0.52, 0.0],
 ]
-const WING_TIP = 10 // index of the wing tip in HALF_OUTLINE
+export const WING_TIP = 10 // index of the wing tip in HALF_OUTLINE
 
-const OUTLINE: ReadonlyArray<readonly [number, number]> = [
+export const OUTLINE: ReadonlyArray<readonly [number, number]> = [
   ...HALF_OUTLINE,
   ...HALF_OUTLINE.slice(1, -1)
     .reverse()
@@ -46,11 +47,11 @@ const OUTLINE: ReadonlyArray<readonly [number, number]> = [
 ]
 
 /** Pale shoulder patches on the back, the manta's signature marking. */
-const SHOULDER_PATCH: ReadonlyArray<readonly [number, number]> = [
+export const SHOULDER_PATCH: ReadonlyArray<readonly [number, number]> = [
   [0.2, 0.12], [0.16, 0.3], [0.06, 0.42], [0.02, 0.36], [0.08, 0.24], [0.12, 0.13],
 ]
 
-const TAIL_SEGMENTS = 9
+export const TAIL_SEGMENTS = 9
 const TAIL_LENGTH = 0.9
 
 const CAMERA_ELEVATION = 0.82 // radians the camera looks down
@@ -100,8 +101,9 @@ export class Manta {
   /** A brief bank-and-climb flourish after a discovery, 0..1. */
   private delight = 0
 
-  private readonly pts: number[] = new Array(OUTLINE.length * 2).fill(0)
-  private readonly tail: number[] = new Array((TAIL_SEGMENTS + 1) * 2).fill(0)
+  /** Projected outline (x, y pairs) and tail spine; refreshed by pose(). */
+  readonly pts: number[] = new Array(OUTLINE.length * 2).fill(0)
+  readonly tail: number[] = new Array((TAIL_SEGMENTS + 1) * 2).fill(0)
 
   constructor(x: number, y: number, yaw: number, private readonly rand: () => number) {
     this.x = x
@@ -215,7 +217,7 @@ export class Manta {
   }
 
   /** Is the back (1) or the belly (0) facing the camera for this wing? */
-  private wingFacing(side: 1 | -1) {
+  wingFacing(side: 1 | -1) {
     const lift = this.wingLift(-0.05, side * 0.75) - this.wingLift(-0.05, side * 0.2)
     const tilt = Math.atan2(lift, 0.55) * side
     // Local wing normal after flap tilt, then rotated like the points.
@@ -231,7 +233,8 @@ export class Manta {
     return { facing: smoothstep(-0.18, 0.18, towardCamera), light: Math.abs(u2) }
   }
 
-  private shade(side: 1 | -1, haze: number) {
+  /** Wing colour: belly or back, lit by how much it faces up, hazed by depth. */
+  shade(side: 1 | -1, haze: number) {
     const { facing, light } = this.wingFacing(side)
     const k = 0.72 + 0.4 * light
     return `rgb(${[0, 1, 2]
@@ -274,77 +277,59 @@ export class Manta {
     return b
   }
 
-  draw(ctx: CanvasRenderingContext2D) {
+  /** Projected shoulder patch of one wing (x, y pairs). */
+  shoulderPatch(side: 1 | -1, out: number[] = []): number[] {
+    const s = this.scale
+    SHOULDER_PATCH.forEach(([f, r], i) => this.project(f, r * side, this.wingLift(f, r * side) + 0.004, out, i * 2, s))
+    return out
+  }
+
+  /**
+   * Everything a renderer needs besides the points: call after pose().
+   * `tipLeft`/`tipRight` are the wing tips the body gradient runs between.
+   */
+  look() {
     const s = this.scale
     const haze = this.depth * 0.55
-    this.pose()
-
-    ctx.save()
-    ctx.lineCap = 'round'
-    ctx.strokeStyle = this.shade(1, haze * 1.3)
-    for (let i = 0; i < TAIL_SEGMENTS; i++) {
-      ctx.lineWidth = Math.max(0.6, (1 - i / TAIL_SEGMENTS) * s * 0.028)
-      ctx.beginPath()
-      ctx.moveTo(this.tail[i * 2]!, this.tail[i * 2 + 1]!)
-      ctx.lineTo(this.tail[i * 2 + 2]!, this.tail[i * 2 + 3]!)
-      ctx.stroke()
-    }
-
-    // Body: one smooth path, shaded across the span so each wing catches its own light.
-    const tipR = WING_TIP * 2
-    const tipL = (OUTLINE.length - WING_TIP) * 2
-    const gradient = ctx.createLinearGradient(
-      this.pts[tipL]!, this.pts[tipL + 1]!, this.pts[tipR]!, this.pts[tipR + 1]!,
-    )
-    const left = this.shade(-1, haze)
-    const right = this.shade(1, haze)
-    gradient.addColorStop(0, left)
-    gradient.addColorStop(0.38, left)
-    gradient.addColorStop(0.62, right)
-    gradient.addColorStop(1, right)
-    ctx.fillStyle = gradient
-    this.tracePath(ctx, this.pts, OUTLINE.length, true)
-    ctx.fill()
-
-    // Shoulder patches, visible when the back faces us.
-    const back = (this.wingFacing(1).facing + this.wingFacing(-1).facing) / 2
-    if (back > 0.05) {
-      ctx.fillStyle = `rgba(214, 226, 228, ${0.17 * back * (1 - haze)})`
-      for (const side of [1, -1] as const) {
-        const patch: number[] = []
-        SHOULDER_PATCH.forEach(([f, r], i) => this.project(f, r * side, this.wingLift(f, r * side) + 0.004, patch, i * 2, s))
-        this.tracePath(ctx, patch, SHOULDER_PATCH.length, true)
-        ctx.fill()
-      }
-    }
-
-    // Rim light: sunlight from the surface catches whichever edges face up on screen.
     let top = Infinity
     let bottom = -Infinity
     for (let i = 1; i < this.pts.length; i += 2) {
       top = Math.min(top, this.pts[i]!)
       bottom = Math.max(bottom, this.pts[i]!)
     }
-    const rim = ctx.createLinearGradient(0, top, 0, bottom)
-    rim.addColorStop(0, `rgba(200, 236, 242, ${0.62 * (1 - haze)})`)
-    rim.addColorStop(0.45, `rgba(200, 236, 242, ${0.14 * (1 - haze)})`)
-    rim.addColorStop(1, 'rgba(200, 236, 242, 0)')
-    ctx.strokeStyle = rim
-    ctx.lineWidth = Math.max(1, s * 0.013)
-    this.tracePath(ctx, this.pts, OUTLINE.length, true)
-    ctx.stroke()
-    ctx.restore()
-  }
-
-  /** Smooth closed path through projected points (quadratic curves via midpoints). */
-  private tracePath(ctx: CanvasRenderingContext2D, pts: number[], count: number, closed: boolean) {
-    const px = (i: number) => pts[((i + count) % count) * 2]!
-    const py = (i: number) => pts[((i + count) % count) * 2 + 1]!
-    ctx.beginPath()
-    ctx.moveTo((px(-1) + px(0)) / 2, (py(-1) + py(0)) / 2)
-    for (let i = 0; i < count; i++) {
-      ctx.quadraticCurveTo(px(i), py(i), (px(i) + px(i + 1)) / 2, (py(i) + py(i + 1)) / 2)
+    const tipR = WING_TIP * 2
+    const tipL = (OUTLINE.length - WING_TIP) * 2
+    return {
+      haze,
+      tailColor: this.shade(1, haze * 1.3),
+      tailWidth: (i: number) => Math.max(0.6, (1 - i / TAIL_SEGMENTS) * s * 0.028),
+      left: this.shade(-1, haze),
+      right: this.shade(1, haze),
+      tipLeft: { x: this.pts[tipL]!, y: this.pts[tipL + 1]! },
+      tipRight: { x: this.pts[tipR]!, y: this.pts[tipR + 1]! },
+      /** 0..1: how much of the back faces the camera (shoulder patches show when > 0.05). */
+      back: (this.wingFacing(1).facing + this.wingFacing(-1).facing) / 2,
+      patchAlpha: 0.17 * ((this.wingFacing(1).facing + this.wingFacing(-1).facing) / 2) * (1 - haze),
+      rimTop: top,
+      rimBottom: bottom,
+      rimAlpha: 1 - haze,
+      rimWidth: Math.max(1, s * 0.013),
     }
-    if (closed) ctx.closePath()
   }
+}
+
+/**
+ * Smooth closed path through projected points (quadratic curves via midpoints), as
+ * move/quad commands any path API can follow.
+ */
+export function smoothPath(
+  pts: ArrayLike<number>,
+  count: number,
+  moveTo: (x: number, y: number) => void,
+  quadTo: (cx: number, cy: number, x: number, y: number) => void,
+) {
+  const px = (i: number) => pts[((i + count) % count) * 2]!
+  const py = (i: number) => pts[((i + count) % count) * 2 + 1]!
+  moveTo((px(-1) + px(0)) / 2, (py(-1) + py(0)) / 2)
+  for (let i = 0; i < count; i++) quadTo(px(i), py(i), (px(i) + px(i + 1)) / 2, (py(i) + py(i + 1)) / 2)
 }

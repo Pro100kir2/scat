@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount, RouterLinkStub } from '@vue/test-utils'
-import type { EnrollmentStatus, ProvidersResponse, VerificationStatus } from '@/types/api'
+import type { EnrollmentStatus, ProvidersResponse, VerificationStatus } from '@scat/shared'
 
 vi.mock('@/services/api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/services/api')>()

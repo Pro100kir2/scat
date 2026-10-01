@@ -2,7 +2,7 @@
 import { computed, nextTick, reactive, ref, shallowRef, watch } from 'vue'
 import { useScan } from '@/composables/useScan'
 import { useSpotlight } from '@/composables/useSpotlight'
-import type { PearlNode } from '@/types/api'
+import type { PearlNode } from '@scat/shared'
 import PearlCard from './PearlCard.vue'
 import QrDialog from './QrDialog.vue'
 import StateNote from './StateNote.vue'
@@ -11,7 +11,7 @@ import CopyButton from '@/components/ui/CopyButton.vue'
 import AppIcon from '@/components/ui/AppIcon.vue'
 import DonateLink from '@/components/ui/DonateLink.vue'
 import { env } from '@/config/env'
-import { countryName, formatMoment, formatNumber, networkLabel, securityLabel } from '@/utils/format'
+import { countryName, networkLabel, RESULTS_NOTES, resultsPhase, resultsSubtitle, securityLabel } from '@scat/shared'
 
 type SortKey = 'rank' | 'latency' | 'country'
 
@@ -93,19 +93,8 @@ function resetFilters() {
   picked.country = picked.security = picked.network = null
 }
 
-const phase = computed(() => {
-  if (scan.loading.value) return 'loading'
-  if (nodes.value.length) return 'results'
-  if (scan.loadError.value) return 'error'
-  if (scan.status.value?.is_scanning || scan.journey.value === 'diving') return 'searching'
-  return 'empty'
-})
-
-const subtitle = computed(() => {
-  const cache = scan.cache.value
-  if (!cache || !nodes.value.length) return ''
-  return `Лучшие ${nodes.value.length} из ${cache.working} рабочих · просмотрено ${formatNumber(cache.tested)} из ${formatNumber(cache.total_nodes)} · ${formatMoment(cache.created_at)}`
-})
+const phase = computed(() => resultsPhase(scan.state.value))
+const subtitle = computed(() => resultsSubtitle(scan.state.value))
 </script>
 
 <template>
@@ -205,23 +194,23 @@ const subtitle = computed(() => {
     <StateNote
       v-else-if="phase === 'searching'"
       tone="searching"
-      title="Скат ещё на глубине"
-      text="Первое погружение займёт пару минут. Жемчужины появятся здесь сами — страницу можно не обновлять."
+      :title="RESULTS_NOTES.searching.title"
+      :text="RESULTS_NOTES.searching.text"
     />
 
     <StateNote
       v-else-if="phase === 'error'"
       tone="error"
-      title="Не удалось связаться со Скатом"
-      text="Сервер не ответил. Проверьте соединение или попробуйте ещё раз через некоторое время."
+      :title="RESULTS_NOTES.error.title"
+      :text="RESULTS_NOTES.error.text"
     >
       <button class="btn btn--sm" type="button" @click="scan.retry()"><AppIcon name="refresh" /> Попробовать снова</button>
     </StateNote>
 
     <StateNote
       v-else
-      title="Жемчужин не нашлось"
-      text="Скат обследовал дно, но ни одна конфигурация не прошла проверку. Такое бывает, когда источники обновляются. Загляните чуть позже."
+      :title="RESULTS_NOTES.empty.title"
+      :text="RESULTS_NOTES.empty.text"
     />
 
     <QrDialog :node="qrNode" @close="qrNode = null" />

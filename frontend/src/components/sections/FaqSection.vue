@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import AppIcon from '@/components/ui/AppIcon.vue'
-import { FAQ } from '@/content/faq'
+import { FAQ } from '@scat/shared'
 </script>
 
 <template>

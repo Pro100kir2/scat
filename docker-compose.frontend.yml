@@ -12,6 +12,9 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      # Framework-independent code shared with the mobile app; the Dockerfile copies it to /shared.
+      additional_contexts:
+        shared: ./shared
       args:
         VITE_API_URL: ${VITE_API_URL:?set VITE_API_URL in .env, e.g. https://api.scat-search.ru}
         VITE_SITE_URL: ${VITE_SITE_URL:-}

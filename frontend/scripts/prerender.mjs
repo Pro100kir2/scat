@@ -70,7 +70,10 @@ for (const page of Object.values(PAGES)) {
 
 // The admin panel: an empty shell (it renders in the browser after sign-in), never indexed.
 {
-  const html = headFor(ADMIN_PAGE).replace(/(<meta\s+name="robots"[^>]*?content=")[^"]*(")/, '$1noindex, nofollow$2')
+  const html = headFor(ADMIN_PAGE)
+    .replace(/(<meta\s+name="robots"[^>]*?content=")[^"]*(")/, '$1noindex, nofollow$2')
+    // No third-party ad script on the page where the admin token is typed.
+    .replace(/\s*<!-- Google AdSense[\s\S]*?-->\s*<script[^>]*adsbygoogle[\s\S]*?<\/script>/, '')
   await mkdir(`${dist}admin`, { recursive: true })
   await writeFile(`${dist}admin/index.html`, html)
   console.log('prerender: /admin/ → dist/admin/index.html (shell)')

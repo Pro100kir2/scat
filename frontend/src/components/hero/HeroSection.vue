@@ -8,13 +8,12 @@ import { useReducedMotion } from '@/composables/useReducedMotion'
 import { useSpotlight } from '@/composables/useSpotlight'
 import { useCooldown } from '@/composables/useCooldown'
 import type { Rect, SceneMode } from '@/ocean/engine'
-import { formatCountdown, plural, PEARLS_NOM } from '@/utils/format'
+import { formatCountdown, plural, PEARLS_NOM, REFRESH_COOLDOWN_SECONDS, sceneFound as foundFor, sceneMode } from '@scat/shared'
 
 const scan = useScan()
 const reducedMotion = useReducedMotion()
 const { focusRank } = useSpotlight()
 
-const REFRESH_COOLDOWN_SECONDS = 10 * 60
 const refreshCooldown = useCooldown('skat:refresh-until', REFRESH_COOLDOWN_SECONDS)
 const refreshing = ref(false)
 
@@ -24,11 +23,8 @@ const scene = ref<InstanceType<typeof OceanScene>>()
 const safeZone = shallowRef<Rect | null>(null)
 const revealed = ref(0)
 
-const mode = computed<SceneMode>(() => {
-  if (scan.journey.value !== 'diving') return 'idle'
-  return scan.diveKind.value === 'live' ? 'scanning' : 'replay'
-})
-const sceneFound = computed(() => (scan.journey.value === 'resting' ? 0 : scan.found.value))
+const mode = computed<SceneMode>(() => sceneMode(scan.state.value))
+const sceneFound = computed(() => foundFor(scan.state.value))
 watch(sceneFound, (n) => {
   if (n === 0) revealed.value = 0
 })

@@ -2,7 +2,7 @@
 import { computed } from 'vue'
 import CommandBlock from '@/components/providers/CommandBlock.vue'
 import { env } from '@/config/env'
-import { PLATFORMS } from '@/utils/probe'
+import { PLATFORMS } from '@scat/shared'
 
 // No window here: the page is prerendered and must hydrate to the same text.
 const api = computed(() => env.apiUrl || 'https://api.scat-search.ru')

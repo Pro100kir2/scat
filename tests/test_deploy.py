@@ -205,7 +205,8 @@ def make_remote(tmp_path: Path) -> Path:
     work = tmp_path / "work"
     subprocess.run(["git", "init", "-q", "-b", "main", str(work)], check=True)
     for name in ("Dockerfile", "docker-compose.yml", "docker-compose.frontend.yml", "frontend/Dockerfile",
-                 "frontend/nginx.conf", "frontend/package-lock.json", ".env.example", "config.txt"):
+                 "frontend/nginx.conf", "frontend/package-lock.json", "shared/package.json", ".env.example",
+                 "config.txt"):
         (work / name).parent.mkdir(parents=True, exist_ok=True)
         (work / name).write_text("x\n")
     (work / ".gitignore").write_text(".env\n")

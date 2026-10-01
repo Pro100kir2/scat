@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { nextTick, ref, watch } from 'vue'
-import type { PearlNode } from '@/types/api'
+import type { PearlNode } from '@scat/shared'
 import AppIcon from '@/components/ui/AppIcon.vue'
 import CopyButton from '@/components/ui/CopyButton.vue'
-import { countryName } from '@/utils/format'
+import { countryName } from '@scat/shared'
 
 const props = defineProps<{ node: PearlNode | null }>()
 const emit = defineEmits<{ close: [] }>()

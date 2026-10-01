@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import type { Reachability } from '@/types/api'
-import { NETWORKS, REACH_STATE, reachSummary } from '@/utils/reach'
-import { plural } from '@/utils/format'
+import type { Reachability } from '@scat/shared'
+import { NETWORKS, REACH_STATE, reachSummary } from '@scat/shared'
+import { plural } from '@scat/shared'
 
 /**
  * "Network availability" inside an opened card: one underwater beacon per provider.

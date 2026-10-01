@@ -1,4 +1,4 @@
-import type { Reachability, ReachState } from '@/types/api'
+import type { Reachability, ReachState } from './types'
 
 /**
  * How each reachability state looks and reads. Tones map to the ocean palette:

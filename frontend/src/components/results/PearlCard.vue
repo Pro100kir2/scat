@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import type { PearlNode } from '@/types/api'
+import type { PearlNode } from '@scat/shared'
 import CopyButton from '@/components/ui/CopyButton.vue'
 import AppIcon from '@/components/ui/AppIcon.vue'
 import NetworkAvailability from './NetworkAvailability.vue'
@@ -12,7 +12,7 @@ import {
   QUALITY_LEVEL,
   securityHint,
   securityLabel,
-} from '@/utils/format'
+} from '@scat/shared'
 
 const props = defineProps<{ node: PearlNode; spotlit: boolean }>()
 const emit = defineEmits<{ qr: [node: PearlNode] }>()

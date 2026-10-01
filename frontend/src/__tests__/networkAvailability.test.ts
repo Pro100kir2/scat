@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { mount, RouterLinkStub } from '@vue/test-utils'
 import NetworkAvailability from '@/components/results/NetworkAvailability.vue'
 import PearlCard from '@/components/results/PearlCard.vue'
-import type { PearlNode, Reachability, ReachState } from '@/types/api'
+import type { PearlNode, Reachability, ReachState } from '@scat/shared'
 
 const row = (provider: string, state: ReachState, latency: number | null = null): Reachability => ({
   provider_id: `prv_${provider}`, provider, state, latency_ms: latency, checked_at: null, probes: 1,

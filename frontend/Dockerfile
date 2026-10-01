@@ -10,6 +10,10 @@ COPY package.json package-lock.json ./
 RUN npm ci --no-audit --no-fund
 
 COPY . .
+# Logic shared with the mobile app lives next to this project (../shared); the build gets it
+# as the named context "shared" (docker-compose.frontend.yml, or
+# `docker build --build-context shared=../shared .`).
+COPY --from=shared . /shared
 
 # Vite embeds VITE_* into the bundle at build time; they cannot change at runtime.
 # Environment variables take precedence over any .env file Vite would read.

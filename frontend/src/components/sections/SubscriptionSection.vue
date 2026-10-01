@@ -1,20 +1,13 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import CopyButton from '@/components/ui/CopyButton.vue'
+import { SUBSCRIPTION_CLIENTS as CLIENTS, SUBSCRIPTION_PATH as SUB_PATH } from '@scat/shared'
 import { apiHref, env } from '@/config/env'
-
-const SUB_PATH = '/api/vless/sub'
 // Without a configured API origin the link is same-origin, which only the browser knows;
 // the prerendered page starts with the bare path and the full link replaces it after hydration.
 const url = ref(`${env.apiUrl}${SUB_PATH}`)
 onMounted(() => (url.value = apiHref(SUB_PATH)))
 
-const CLIENTS = [
-  { name: 'v2rayNG', where: 'Android' },
-  { name: 'Hiddify', where: 'Android · iOS · ПК' },
-  { name: 'Streisand', where: 'iOS · macOS' },
-  { name: 'NekoBox', where: 'Android · ПК' },
-]
 </script>
 
 <template>

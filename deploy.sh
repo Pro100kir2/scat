@@ -545,7 +545,7 @@ sync_repository() {
 
   local f missing=()
   for f in Dockerfile docker-compose.yml docker-compose.frontend.yml frontend/Dockerfile frontend/nginx.conf \
-           frontend/package-lock.json .env.example config.txt; do
+           frontend/package-lock.json shared/package.json .env.example config.txt; do
     [[ -f "$APP_DIR/$f" ]] || missing+=("$f")
   done
   ((${#missing[@]} == 0)) || die "The checkout lacks: ${missing[*]}. Push these files to ${BRANCH} first."

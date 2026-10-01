@@ -58,6 +58,10 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     'expo-router',
     'expo-font',
     './plugins/withSceneLifecycle',
+    // AdMob, Android only. The manifest holds a placeholder that Gradle fills per build type with
+    // the sample App ID (debug) or the real one (release): see plugins/withAdMobAppId.js.
+    ['react-native-google-mobile-ads', { androidAppId: '${admobAppId}', delayAppMeasurementInit: true }],
+    './plugins/withAdMobAppId',
     [
       'expo-splash-screen',
       { image: './assets/splash-icon.png', imageWidth: 160, resizeMode: 'contain', backgroundColor: '#050d14' },

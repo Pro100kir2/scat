@@ -9,6 +9,7 @@ import { JetBrainsMono_400Regular } from '@expo-google-fonts/jetbrains-mono/400R
 import { Manrope_400Regular } from '@expo-google-fonts/manrope/400Regular'
 import { Manrope_500Medium } from '@expo-google-fonts/manrope/500Medium'
 import { Manrope_600SemiBold } from '@expo-google-fonts/manrope/600SemiBold'
+import { initializeAds } from '@/lib/ads'
 import { useScanLifecycle } from '@/lib/scan'
 import { colors, fonts } from '@/theme'
 
@@ -30,6 +31,9 @@ export default function RootLayout() {
     CormorantGaramond_500Medium_Italic,
   })
   useScanLifecycle()
+  useEffect(() => {
+    void initializeAds()
+  }, [])
 
   // If a font fails to load the app still opens, in the system face.
   const ready = loaded || !!error

@@ -197,10 +197,23 @@ eas build --platform android --profile production     # → an .aab (Android App
   then `cd android && ./gradlew bundleRelease`. `android/` is generated and git-ignored.
 - Config (from `app.config.ts`): application ID `ru.scatsearch.app`, min SDK 24, target/compile
   SDK 36 (Expo SDK 57 defaults), adaptive icon with a monochrome layer, `scat://` deep links.
-- **Permissions:** release builds request only `INTERNET`. Camera, microphone, storage, overlay and
-  vibration are explicitly blocked in the config. Debug builds (development client) additionally
+- **Permissions:** the app itself needs only `INTERNET`. Camera, microphone, storage, overlay and
+  vibration are explicitly blocked in the config. The AdMob SDK (see "AdMob") adds
+  `ACCESS_NETWORK_STATE`, `WAKE_LOCK`, `FOREGROUND_SERVICE`, `com.google.android.gms.permission.AD_ID`
+  and the `ACCESS_ADSERVICES_*` ones; declare the advertising ID in Play Console. Debug builds also
   merge Android's standard debug manifest (`SYSTEM_ALERT_WINDOW`, cleartext traffic for Metro);
   that never reaches a release build.
+
+## AdMob (Android only, no ads shown yet)
+
+`react-native-google-mobile-ads` is linked on Android only (`react-native.config.js` keeps it out of
+the iOS build until iOS IDs exist). `admob.json` is the single source for the IDs: Scat's App ID and
+banner / native / app-open units, and Google's official sample IDs. Debug builds get the sample App
+ID (a Gradle manifest placeholder per build type, `plugins/withAdMobAppId.js`) and the sample units
+(`src/config/admob.ts`, by `__DEV__`); release builds get Scat's. `initializeAds()` (`src/lib/ads.ts`)
+only starts the SDK at launch; nothing requests or shows an ad, and there are no rewarded ads.
+Before showing ads: add the UMP consent flow for the EEA/UK (`AdsConsent`), the Play Data safety and
+Advertising ID declarations, and an `app-ads.txt` on `scat-search.ru`.
 
 ## iOS release
 

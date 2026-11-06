@@ -274,8 +274,22 @@ wget -qO- https://api.scat-search.ru/api/probes/install.sh | sh -s -- --token sk
    secret, `/etc/scat-probe/probe.json`, mode 0600) → service (systemd with an empty capability
    set, procd, OpenRC or SysV) → start → `scat-probe check` until the first heartbeat succeeds.
 
-Options: `--diagnose-only`, `--uninstall`, `--reenroll`, `--print-diagnostics` (no network).
-Re-running the installer on a device that already has a probe keeps its identity (an upgrade).
+Options: `--diagnose-only`, `--uninstall`, `--print-diagnostics` (no network), and for a device
+that already has a probe: `--replace` (alias `--reenroll`), `--keep`, `--upgrade`.
+
+**A device that already has a probe.** Before anything is sent, the installer looks for an
+existing binary, service or `/etc/scat-probe/probe.json`, shows the probe ID, version, service
+and whether it is Online (never the secret), and asks on the terminal (`/dev/tty`, since with
+`curl | sh` stdin is the script):
+
+1. **Replace**: the new binary is installed, the device is registered as a new probe with the
+   new `--token` (the credentials are rewritten atomically: if registration fails, the old probe
+   is left in place), then the old service and any stale binary are removed and the new service
+   is started. The old probe stays on the website as Offline. Without `--token` nothing changes.
+2. **Keep as is** (default, also on Enter): nothing is changed and nothing is sent.
+
+Without a terminal the probe is kept as is unless `--replace`, `--keep` or `--upgrade` says
+otherwise. `--upgrade` updates the binary and the service but keeps the probe's identity.
 
 ### Manual installation
 

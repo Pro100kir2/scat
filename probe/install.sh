@@ -9,7 +9,13 @@
 #   --diagnose-only    run the compatibility check and stop; installs nothing
 #   --print-diagnostics  print the collected facts as JSON and stop (nothing is sent)
 #   --uninstall        stop and remove the probe, its service and its credentials
-#   --reenroll         register a new probe even if this device already has one
+#
+# If this device already has a probe, the script shows it and asks (on the terminal) whether
+# to replace it or keep it as is. Without a terminal it keeps it, unless told otherwise:
+#   --replace          replace it: remove the old installation and register a new probe
+#                      with --token (--reenroll is the same)
+#   --keep             keep it as is: change nothing and exit
+#   --upgrade          update the binary and the service but keep the probe's identity
 #
 # What happens, in this order:
 #   1. DIAGNOSTIC  facts about this device are collected and sent to the server over HTTPS
@@ -36,7 +42,13 @@ BIN_NAME="scat-probe"
 
 TOKEN=""
 MODE="install"
+# What to do with a probe that is already installed: ask, replace, keep or upgrade.
+EXISTING_ACTION="ask"
 REENROLL=0
+REPLACING=0
+# Where the replace/keep question is read from (the pipe of `curl | sh` is stdin).
+# Only the test-suite overrides it.
+TTY="${SCAT_PROBE_TTY:-/dev/tty}"
 TMP=""
 
 say() { printf '%s\n' "$*"; }
@@ -55,9 +67,11 @@ while [ $# -gt 0 ]; do
         --diagnose-only) MODE="diagnose"; shift ;;
         --print-diagnostics) MODE="print"; shift ;;
         --uninstall) MODE="uninstall"; shift ;;
-        --reenroll) REENROLL=1; shift ;;
+        --replace|--reenroll) EXISTING_ACTION="replace"; shift ;;
+        --keep) EXISTING_ACTION="keep"; shift ;;
+        --upgrade) EXISTING_ACTION="upgrade"; shift ;;
         --api) [ $# -ge 2 ] || die "--api needs a value"; API="$2"; shift 2 ;;
-        -h|--help) sed -n '2,24p' "$0" 2>/dev/null || say "see the website for usage"; exit 0 ;;
+        -h|--help) sed -n '2,30p' "$0" 2>/dev/null || say "see the website for usage"; exit 0 ;;
         *) die "unknown option: $1" ;;
     esac
 done
@@ -386,7 +400,9 @@ INIT
 
 start_service() {
     case "$V_SERVICE" in
-        systemd) systemctl daemon-reload && systemctl enable --now scat-probe ;;
+        # `enable --now` does not restart a probe that is already running (an upgrade).
+        systemd) systemctl daemon-reload && systemctl enable --now scat-probe \
+                     && { [ "$EX_FOUND" = 0 ] || systemctl restart scat-probe; } ;;
         procd) "$R/etc/init.d/scat-probe" enable && "$R/etc/init.d/scat-probe" restart ;;
         openrc) rc-update add scat-probe default && rc-service scat-probe restart ;;
         sysvinit)
@@ -428,8 +444,19 @@ install_probe() {
         step "Registering the probe"
         mkdir -p "$R$CONFIG_DIR" && chmod 700 "$R$CONFIG_DIR"
         force=""; [ "$REENROLL" = 1 ] && force="--force"
+        # --force rewrites probe.json atomically: if registration fails, the old one is untouched.
+        kept=""; [ "$REPLACING" = 1 ] && kept=" The previous probe was left in place."
         "$R$V_DIR/$BIN_NAME" enroll --api "$API" --token "$TOKEN" --config "$R$CONFIG" $force \
-            || die "registration failed (the token is single-use and expires after 24 hours)"
+            || die "registration failed (the token is single-use and expires after 24 hours).$kept"
+    fi
+
+    if [ "$REPLACING" = 1 ]; then
+        step "Removing the old service"
+        remove_service
+        # A binary left in the other directory by an older install would shadow or confuse.
+        for dir in /usr/bin /usr/local/bin; do
+            [ "$dir" = "$V_DIR" ] || rm -f "$R$dir/$BIN_NAME"
+        done
     fi
 
     step "Setting up the $V_SERVICE service"
@@ -450,9 +477,7 @@ install_probe() {
     die "the probe is installed but did not reach the server yet; check its log (logread / journalctl -u scat-probe)"
 }
 
-uninstall_probe() {
-    [ "$(id -u 2>/dev/null)" = 0 ] || die "root privileges are required (re-run with sudo)"
-    step "Removing the Скат probe"
+remove_service() {
     if [ -f "$R/etc/systemd/system/scat-probe.service" ]; then
         systemctl disable --now scat-probe 2>/dev/null
         rm -f "$R/etc/systemd/system/scat-probe.service"
@@ -466,15 +491,108 @@ uninstall_probe() {
         have update-rc.d && update-rc.d -f scat-probe remove >/dev/null 2>&1
         rm -f "$R/etc/init.d/scat-probe"
     fi
+}
+
+uninstall_probe() {
+    [ "$(id -u 2>/dev/null)" = 0 ] || die "root privileges are required (re-run with sudo)"
+    step "Removing the Скат probe"
+    remove_service
     rm -f "$R/usr/bin/$BIN_NAME" "$R/usr/local/bin/$BIN_NAME"
     rm -rf "$R$CONFIG_DIR"
     say "Removed. The probe will show as Offline on the website."
+}
+
+# ------------------------------------------------------------------ existing installation
+EX_FOUND=0; EX_ID=""; EX_BIN=""; EX_VERSION=""; EX_SERVICE=""
+
+find_existing() {
+    for dir in /usr/bin /usr/local/bin; do
+        if [ -f "$R$dir/$BIN_NAME" ]; then EX_BIN="$dir/$BIN_NAME"; break; fi
+    done
+    if [ -f "$R/etc/systemd/system/scat-probe.service" ]; then EX_SERVICE=systemd
+    elif [ -f "$R/etc/init.d/scat-probe" ]; then EX_SERVICE=init.d
+    fi
+    if [ -f "$R$CONFIG" ]; then
+        # Only the ID is shown; the file also holds the probe's secret, which is never printed.
+        EX_ID=$(sed -n 's/.*"probe_id"[[:space:]]*:[[:space:]]*"\([A-Za-z0-9_-]*\)".*/\1/p' "$R$CONFIG" | head -n 1)
+        [ -n "$EX_ID" ] || EX_ID="unknown (unreadable $CONFIG)"
+    fi
+    if [ -n "$EX_BIN" ] && [ -x "$R$EX_BIN" ]; then
+        EX_VERSION=$("$R$EX_BIN" version 2>/dev/null | head -n 1 | tr -d '\000-\037')
+    fi
+    if [ -n "$EX_BIN$EX_SERVICE" ] || [ -f "$R$CONFIG" ]; then EX_FOUND=1; fi
+}
+
+show_existing() {
+    step "This device already has a Скат probe"
+    say "  probe:   ${EX_ID:-not registered (no $CONFIG)}"
+    say "  binary:  ${EX_BIN:-missing}${EX_VERSION:+ ($EX_VERSION)}"
+    say "  service: ${EX_SERVICE:-missing}"
+    if [ -n "$EX_BIN" ] && [ -x "$R$EX_BIN" ] && [ -f "$R$CONFIG" ]; then
+        if "$R$EX_BIN" check --config "$R$CONFIG" >/dev/null 2>&1; then
+            say "  status:  Online"
+        else
+            say "  status:  not reaching the server"
+        fi
+    fi
+}
+
+# The answer is read from the terminal, not from stdin: with `curl ... | sh` stdin is the script.
+ask_existing() {
+    # A subshell: in dash/ash a failed redirection on a builtin would end the whole script.
+    if ! ( : <"$TTY" ) 2>/dev/null; then
+        say ""
+        say "No terminal to ask whether to replace it, so it is kept as is. Nothing was changed."
+        say "To replace it, run the command again with --replace (needs a new --token)."
+        EXISTING_ACTION=keep
+        return
+    fi
+    exec 3<"$TTY"  # opened once, so a retried answer continues where the last one stopped
+    while :; do
+        say ""
+        say "What should be done with it?"
+        say "  1) Replace: remove the old installation and register this device again with the new token."
+        say "     The old probe stays on the website as Offline; you can delete it there."
+        say "  2) Keep as is: change nothing and exit."
+        printf 'Choose 1 or 2 [2]: '
+        answer=""
+        IFS= read -r answer <&3 || answer=""
+        case "$answer" in
+            1|r|R|replace) EXISTING_ACTION=replace; break ;;
+            ""|2|k|K|keep) EXISTING_ACTION=keep; break ;;
+            *) say "Please answer 1 or 2." ;;
+        esac
+    done
+    exec 3<&-
+}
+
+handle_existing() {
+    find_existing
+    [ "$EX_FOUND" = 1 ] || return 0
+    show_existing
+    [ "$EXISTING_ACTION" = ask ] && ask_existing
+    case "$EXISTING_ACTION" in
+        keep)
+            say ""
+            say "Kept the existing installation as is. Nothing was changed."
+            exit 0 ;;
+        replace)
+            [ -n "$TOKEN" ] || die "a new --token from the website is required to replace the probe. Nothing was changed."
+            say ""
+            say "Replacing the existing installation."
+            REPLACING=1; REENROLL=1 ;;
+        upgrade)
+            say ""
+            say "Upgrading the existing installation and keeping its identity." ;;
+    esac
 }
 
 # ------------------------------------------------------------------ main
 case "$MODE" in
     uninstall) uninstall_probe; exit 0 ;;
 esac
+
+[ "$MODE" = install ] && handle_existing
 
 step "DIAGNOSTIC: checking this device"
 collect

@@ -111,7 +111,9 @@ def build_device(tmp_path: Path, name: str, uid: int = 0) -> tuple[Path, dict]:
     # Real HTTP for the fake API goes through the real curl.
     (stubs / "curl").unlink()
     env = {"PATH": f"{stubs}:{os.environ['PATH']}", "SCAT_PROBE_ROOT": str(root), "TMPDIR": str(tmp_path),
-           "HOME": str(tmp_path), "LC_ALL": "C"}
+           "HOME": str(tmp_path), "LC_ALL": "C",
+           # No terminal unless a test provides one (see answer_with): never read the real /dev/tty.
+           "SCAT_PROBE_TTY": str(tmp_path / "no-tty")}
     return root, env
 
 
@@ -348,11 +350,115 @@ def test_uninstall_removes_everything(tmp_path, api):
         assert not (root / rel).exists()
 
 
-def test_reinstall_keeps_the_existing_identity(tmp_path, api):
+# --- a device that already has a probe: replace it or keep it as is -------------------------
+OLD_ID = "prb_keepme00000000"
+
+
+def installed_device(tmp_path, api):
+    """A device with a working probe whose identity is OLD_ID."""
     root, env = build_device(tmp_path, "debian_x86_64")
     fake = api()
     assert run_installer(env, "--api", fake.url, "--token", TOKEN).returncode == 0
-    (root / "etc/scat-probe/probe.json").write_text('{"probe_id":"prb_keepme00000000"}')
-    proc = run_installer(env, "--api", fake.url, "--token", TOKEN)  # e.g. an upgrade
+    (root / "etc/scat-probe/probe.json").write_text(f'{{"probe_id":"{OLD_ID}","secret":"s3cr3t-value"}}')
+    (tmp_path / "commands.log").write_text("")
+    fake.requests.clear()
+    return root, env, fake
+
+
+def answer_with(tmp_path, env, text):
+    """Stands in for the terminal the installer asks on."""
+    tty = tmp_path / "tty"
+    tty.write_text(text)
+    env["SCAT_PROBE_TTY"] = str(tty)
+
+
+def probe_id(root):
+    return json.loads((root / "etc/scat-probe/probe.json").read_text())["probe_id"]
+
+
+def test_existing_probe_is_shown_without_its_secret(tmp_path, api):
+    root, env, fake = installed_device(tmp_path, api)
+    answer_with(tmp_path, env, "2\n")
+    proc = run_installer(env, "--api", fake.url, "--token", TOKEN)
+    assert "already has a Скат probe" in proc.stdout
+    assert OLD_ID in proc.stdout and "/usr/local/bin/scat-probe (scat-probe 1.0.0 test)" in proc.stdout
+    assert "service: systemd" in proc.stdout and "status:  Online" in proc.stdout
+    assert "s3cr3t" not in proc.stdout + proc.stderr
+
+
+@pytest.mark.parametrize("answer", ["2\n", "\n", "k\n", "", "x\n2\n"])
+def test_keep_changes_nothing(tmp_path, api, answer):
+    root, env, fake = installed_device(tmp_path, api)
+    before = (root / "etc/scat-probe/probe.json").read_text()
+    answer_with(tmp_path, env, answer)
+    proc = run_installer(env, "--api", fake.url, "--token", TOKEN)
+    assert proc.returncode == 0 and "Kept the existing installation as is" in proc.stdout
+    assert fake.requests == []  # not even the diagnostics are sent
+    assert (root / "etc/scat-probe/probe.json").read_text() == before
+    assert (tmp_path / "commands.log").read_text() == ""
+    if answer.startswith("x"):
+        assert "Please answer 1 or 2" in proc.stdout
+
+
+def test_replace_registers_a_new_probe(tmp_path, api):
+    root, env, fake = installed_device(tmp_path, api)
+    (root / "usr/bin").mkdir(parents=True, exist_ok=True)
+    (root / "usr/bin/scat-probe").write_text("old binary from another layout")
+    answer_with(tmp_path, env, "1\n")
+    proc = run_installer(env, "--api", fake.url, "--token", TOKEN)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "Replacing the existing installation" in proc.stdout and "Online" in proc.stdout
+    assert [r[0] for r in fake.requests] == ["POST", "GET"]
+    assert probe_id(root) == "prb_0123456789abcdef"
+    assert not (root / "usr/bin/scat-probe").exists()  # the stale copy is gone
+    assert (root / "etc/systemd/system/scat-probe.service").exists()
+    log = (tmp_path / "commands.log").read_text()
+    assert log.index("systemctl disable --now scat-probe") < log.index("systemctl enable --now scat-probe")
+
+
+def test_replace_flag_needs_no_terminal(tmp_path, api):
+    root, env, fake = installed_device(tmp_path, api)
+    proc = run_installer(env, "--api", fake.url, "--token", TOKEN, "--replace")
+    assert proc.returncode == 0 and "Choose 1 or 2" not in proc.stdout
+    assert probe_id(root) == "prb_0123456789abcdef"
+
+
+def test_replace_without_a_token_changes_nothing(tmp_path, api):
+    root, env, fake = installed_device(tmp_path, api)
+    answer_with(tmp_path, env, "1\n")
+    proc = run_installer(env, "--api", fake.url)
+    assert proc.returncode != 0 and "--token" in proc.stderr and "Nothing was changed" in proc.stderr
+    assert fake.requests == [] and probe_id(root) == OLD_ID
+
+
+def test_failed_replace_keeps_the_old_identity(tmp_path, api):
+    root, env, fake = installed_device(tmp_path, api)
+    fake.binary = FAKE_PROBE.replace('  enroll) shift;', '  enroll) echo "token expired" >&2; exit 1; shift;').encode()
+    proc = run_installer(env, "--api", fake.url, "--token", TOKEN, "--replace")
+    assert proc.returncode != 0 and "previous probe was left in place" in proc.stderr
+    assert probe_id(root) == OLD_ID
+    assert "disable" not in (tmp_path / "commands.log").read_text()
+
+
+def test_without_a_terminal_the_probe_is_kept(tmp_path, api):
+    root, env, fake = installed_device(tmp_path, api)
+    proc = run_installer(env, "--api", fake.url, "--token", TOKEN)
+    assert proc.returncode == 0 and "No terminal" in proc.stdout and "--replace" in proc.stdout
+    assert fake.requests == [] and probe_id(root) == OLD_ID
+
+
+def test_upgrade_keeps_the_existing_identity(tmp_path, api):
+    root, env, fake = installed_device(tmp_path, api)
+    proc = run_installer(env, "--api", fake.url, "--token", TOKEN, "--upgrade")
     assert proc.returncode == 0 and "Keeping the existing probe identity" in proc.stdout
-    assert "prb_keepme" in (root / "etc/scat-probe/probe.json").read_text()
+    assert probe_id(root) == OLD_ID
+    assert "systemctl restart scat-probe" in (tmp_path / "commands.log").read_text()
+
+
+def test_fresh_device_is_not_asked(tmp_path, api):
+    root, env = build_device(tmp_path, "debian_x86_64")
+    fake = api()
+    answer_with(tmp_path, env, "2\n")
+    proc = run_installer(env, "--api", fake.url, "--token", TOKEN)
+    assert proc.returncode == 0 and "already has" not in proc.stdout
+    assert "systemctl restart" not in (tmp_path / "commands.log").read_text()
